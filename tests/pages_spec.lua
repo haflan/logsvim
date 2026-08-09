@@ -96,16 +96,67 @@ describe("pages.open buffer", function()
     helpers.rmtree(root)
   end)
 
-  it("opens a read-only nofile buffer rendering the page", function()
+  it("opens an editable acwrite buffer rendering the page", function()
     pages.open("Neovim")
     local bufnr = vim.api.nvim_get_current_buf()
 
-    assert.are.equal("nofile", vim.bo[bufnr].buftype)
-    assert.is_false(vim.bo[bufnr].modifiable)
+    assert.are.equal("acwrite", vim.bo[bufnr].buftype)
+    assert.is_true(vim.bo[bufnr].modifiable)
     assert.is_false(vim.bo[bufnr].modified)
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
     assert.are.equal("# Neovim", lines[1])
+
+    close_buf(bufnr)
+  end)
+
+  it("saving edited content updates pages/<name>.md", function()
+    pages.open("Neovim")
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    vim.api.nvim_buf_set_lines(bufnr, 2, 3, false, { "Updated description." })
+    vim.cmd("write")
+
+    assert.are.equal("Updated description.\n", helpers.read_file(root .. "/pages/Neovim.md"))
+    assert.is_false(vim.bo[bufnr].modified)
+
+    close_buf(bufnr)
+  end)
+
+  it("saving a brand-new page creates pages/<name>.md", function()
+    pages.open("NoSuchPage")
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    assert.are.equal(0, vim.fn.filereadable(root .. "/pages/NoSuchPage.md"))
+
+    vim.api.nvim_buf_set_lines(bufnr, 2, 2, false, { "Freshly created content." })
+    vim.cmd("write")
+
+    assert.are.equal("Freshly created content.\n", helpers.read_file(root .. "/pages/NoSuchPage.md"))
+
+    close_buf(bufnr)
+  end)
+
+  it("discards edits made to the linked references section on save", function()
+    pages.open("Neovim")
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local ref_lnum
+    for i, l in ipairs(lines) do
+      if l == "## Linked references" then
+        ref_lnum = i
+        break
+      end
+    end
+    assert.truthy(ref_lnum)
+
+    vim.api.nvim_buf_set_lines(bufnr, ref_lnum, ref_lnum, false, { "tampered reference text" })
+    vim.cmd("write")
+
+    local text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+    assert.is_falsy(text:find("tampered reference text", 1, true))
+    assert.is_falsy(helpers.read_file(root .. "/pages/Neovim.md"):find("tampered", 1, true))
 
     close_buf(bufnr)
   end)
