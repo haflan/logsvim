@@ -63,6 +63,16 @@ describe("schedule.due", function()
     assert.are.equal(1, #schedule.due(root, NOW))
   end)
 
+  it("is due if either SCHEDULED or DEADLINE is overdue when a block has both", function()
+    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2026-08-20 Thu>\n  DEADLINE: <2026-08-01 Sat>\n")
+    assert.are.equal(1, #schedule.due(root, NOW))
+  end)
+
+  it("does not misread prose starting with a marker-like word plus hyphen as an actual marker", function()
+    write_file(root .. "/pages/Project.md", "- DONE-ish workaround for now\n  SCHEDULED: <2026-08-01 Sat>\n")
+    assert.are.equal(1, #schedule.due(root, NOW))
+  end)
+
   it("finds overdue blocks written directly in a journal file, not just pages, tagged with kind = journal", function()
     write_file(root .. "/journals/2026_07_31.md", "- [[Plugin Ideas]]\n  - logsvim: journal quick-add\n\n- TODO Review PR\n  SCHEDULED: <2026-08-01 Sat>\n")
     local groups = schedule.due(root, NOW)
@@ -234,6 +244,11 @@ describe("schedule.by_marker", function()
 
   it("returns an empty list for a status with no matches", function()
     assert.are.same({}, schedule.by_marker(root, "WAITING"))
+  end)
+
+  it("does not match a marker-like prefix that's part of a longer word", function()
+    write_file(root .. "/pages/Project.md", "- DONE-ish task\n")
+    assert.are.equal(0, #schedule.by_marker(root, "DONE"))
   end)
 end)
 

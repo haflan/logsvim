@@ -19,8 +19,11 @@ local CONTENT_START = 2
 -- at the row (0-indexed) where the read-only aggregation section begins, or
 -- nil if the page currently has nothing to show there (in which case
 -- everything from CONTENT_START to the end of the buffer is page content).
--- `heading_kind` maps each "### <name>" heading currently in the buffer to
--- "journal" or "page", so goto_reference() knows which one to jump to.
+-- `heading_kind` maps each "### <name>" heading's 1-indexed line number in
+-- the buffer to "journal" or "page", so goto_reference() knows which one to
+-- jump to. Keyed by line rather than name, since a pseudo-page can list a
+-- journal-sourced and a page-sourced group whose names happen to collide
+-- (e.g. a page and a journal date with the same display text).
 local state = {}
 
 -- "Pseudo-pages": synthetic, read-only pages that don't correspond to a
@@ -52,30 +55,8 @@ local function line_references(line, name)
   return false
 end
 
-local function read_lines(path)
-  local f = io.open(path, "r")
-  if not f then
-    return {}
-  end
-  local lines = {}
-  for line in f:lines() do
-    table.insert(lines, line)
-  end
-  f:close()
-  return lines
-end
-
 local function list_journal_files(root)
-  local dir = graph.journal_dir(root)
-  local files = {}
-  local ok, entries = pcall(vim.fn.readdir, dir)
-  if ok and entries then
-    for _, fname in ipairs(entries) do
-      if fname:match("%.md$") then
-        table.insert(files, fname)
-      end
-    end
-  end
+  local files = graph.list_md_files(graph.journal_dir(root))
   -- "YYYY_MM_DD.md" sorts chronologically as a plain string, so descending
   -- string order is newest-first.
   table.sort(files, function(a, b)
@@ -91,7 +72,7 @@ end
 function M.find_references(root, name)
   local groups = {}
   for _, filename in ipairs(list_journal_files(root)) do
-    local lines = read_lines(graph.journal_dir(root) .. "/" .. filename)
+    local lines = graph.read_lines(graph.journal_dir(root) .. "/" .. filename)
     local headers = {}
     for i, line in ipairs(lines) do
       if line_references(line, name) then
@@ -110,13 +91,14 @@ local function page_content(root, name)
   if vim.fn.filereadable(path) == 0 then
     return nil
   end
-  return read_lines(path)
+  return graph.read_lines(path)
 end
 
 -- Render a pseudo-page: "# name" plus its aggregated groups, each under a
 -- "### <source>" heading, with no editable region at all (content_end ==
--- CONTENT_START unconditionally). `heading_kind` maps each heading to its
--- source's kind ("journal" or "page") for goto_reference() to consult.
+-- CONTENT_START unconditionally). `heading_kind` maps each heading's line
+-- number to its source's kind ("journal" or "page") for goto_reference() to
+-- consult.
 local function render_pseudo(root, name, provider)
   local lines = { "# " .. name, "" }
   local heading_kind = {}
@@ -126,7 +108,7 @@ local function render_pseudo(root, name, provider)
       table.insert(lines, "")
     end
     table.insert(lines, "### " .. group.name)
-    heading_kind[group.name] = group.kind
+    heading_kind[#lines] = group.kind
     table.insert(lines, "")
     for _, l in ipairs(group.lines) do
       table.insert(lines, l)
@@ -284,7 +266,7 @@ function M.goto_reference(bufnr)
   for i = #lines, 1, -1 do
     local date = lines[i]:match("^### (.+)$")
     if date then
-      if st and st.heading_kind and st.heading_kind[date] == "page" then
+      if st and st.heading_kind and st.heading_kind[i] == "page" then
         M.open(date)
       else
         journal.goto_date(root, date)
@@ -402,6 +384,10 @@ end
 function M.rename(root, old_name, new_name)
   if PSEUDO_PAGES[old_name] then
     vim.notify("logsvim: [[" .. old_name .. "]] is a built-in page and can't be renamed", vim.log.levels.WARN)
+    return
+  end
+  if PSEUDO_PAGES[new_name] then
+    vim.notify("logsvim: [[" .. new_name .. "]] is a built-in page name and can't be used", vim.log.levels.WARN)
     return
   end
 

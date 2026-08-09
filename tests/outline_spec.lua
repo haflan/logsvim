@@ -4,42 +4,42 @@ local outline = require("logsvim.outline")
 describe("outline.ancestor_chain", function()
   it("returns empty for a top-level line", function()
     local lines = { "- A" }
-    assert.are.same({}, outline.ancestor_chain(lines, 1))
+    assert.are.same({}, outline._test.ancestor_chain(lines, 1))
   end)
 
   it("returns the full multi-level path, shallowest first", function()
     local lines = { "- A", "\t- B", "\t\t- C" }
-    assert.are.same({ 1, 2 }, outline.ancestor_chain(lines, 3))
+    assert.are.same({ 1, 2 }, outline._test.ancestor_chain(lines, 3))
   end)
 
   it("skips blank lines while searching upward", function()
     local lines = { "- A", "", "\t- B" }
-    assert.are.same({ 1 }, outline.ancestor_chain(lines, 3))
+    assert.are.same({ 1 }, outline._test.ancestor_chain(lines, 3))
   end)
 end)
 
 describe("outline.collect_block", function()
   it("collects a bullet plus its more-indented descendants", function()
     local lines = { "- Milestones", "\t- TODO A", "\t  SCHEDULED: <2026-07-20 Mon>", "\t- TODO B" }
-    local block, extent = outline.collect_block(lines, 2)
+    local block, extent = outline._test.collect_block(lines, 2)
     assert.are.same({ "\t- TODO A", "\t  SCHEDULED: <2026-07-20 Mon>" }, block)
     assert.are.equal(4, extent)
   end)
 
   it("stops at a sibling with equal or shallower indent", function()
     local lines = { "- A", "\t- child", "- B" }
-    local block, extent = outline.collect_block(lines, 1)
+    local block, extent = outline._test.collect_block(lines, 1)
     assert.are.same({ "- A", "\t- child" }, block)
     assert.are.equal(3, extent)
   end)
 
   it("trims trailing blank lines but keeps internal ones", function()
     local trailing = { "- A", "\t- child1", "", "" }
-    local block = outline.collect_block(trailing, 1)
+    local block = outline._test.collect_block(trailing, 1)
     assert.are.same({ "- A", "\t- child1" }, block)
 
     local internal = { "- A", "\t- child1", "", "\t- child2" }
-    local block2, extent2 = outline.collect_block(internal, 1)
+    local block2, extent2 = outline._test.collect_block(internal, 1)
     assert.are.same({ "- A", "\t- child1", "", "\t- child2" }, block2)
     assert.are.equal(5, extent2)
   end)

@@ -31,13 +31,20 @@ local DONE_MARKERS = { DONE = true, CANCELED = true, CANCELLED = true }
 
 -- Logseq's task marker (TODO/DOING/NOW/LATER/WAITING/IN-PROGRESS/DONE/
 -- CANCELED/CANCELLED) if the block's own first line has one, else nil for
--- a plain (non-task) bullet.
+-- a plain (non-task) bullet. Requires the marker to be its own word (end of
+-- line or followed by whitespace) so prose like "DONE-ish workaround" isn't
+-- misread as the DONE marker -- Lua's %f frontier alone would backtrack
+-- across the trailing hyphen and accept just that.
 local function marker(header_line)
   local content = header_line:match("^[ \t]*%-%s*(.*)$")
   if not content then
     return nil
   end
-  return content:match("^(%u[%u%-]*)%f[%A]")
+  local word, rest = content:match("^(%u[%u%-]*)(.*)$")
+  if word and (rest == "" or rest:match("^%s")) then
+    return word
+  end
+  return nil
 end
 
 local function is_done(header_line)
@@ -45,41 +52,14 @@ local function is_done(header_line)
   return m ~= nil and DONE_MARKERS[m] == true
 end
 
-local function read_lines(path)
-  local f = io.open(path, "r")
-  if not f then
-    return {}
-  end
-  local lines = {}
-  for line in f:lines() do
-    table.insert(lines, line)
-  end
-  f:close()
-  return lines
-end
-
-local function list_md_files(dir)
-  local files = {}
-  local ok, entries = pcall(vim.fn.readdir, dir)
-  if ok and entries then
-    for _, fname in ipairs(entries) do
-      if fname:match("%.md$") then
-        table.insert(files, fname)
-      end
-    end
-  end
-  table.sort(files)
-  return files
-end
-
 -- Walk every journal/page file, calling `on_file(path, kind, name, lines)`
 -- for each. `kind` is "journal" or "page", `name` is the display name
 -- (journal date or page name) for that source file.
 local function each_file(root, on_file)
   for _, entry in ipairs({ { dir = graph.journal_dir(root), kind = "journal" }, { dir = graph.pages_dir(root), kind = "page" } }) do
-    for _, fname in ipairs(list_md_files(entry.dir)) do
+    for _, fname in ipairs(graph.list_md_files(entry.dir)) do
       local path = entry.dir .. "/" .. fname
-      on_file(path, entry.kind, graph.filename_display(fname), read_lines(path))
+      on_file(path, entry.kind, graph.filename_display(fname), graph.read_lines(path))
     end
   end
 end
@@ -123,22 +103,30 @@ end
 -- { { source = "<path>", kind = "journal"|"page", name = <page/date name>,
 --     header = <line index>, lines = <file's lines array>, date_t = <time>,
 --     done = bool }, ... }
+-- A block with both a SCHEDULED and a DEADLINE line is reported once, with
+-- date_t set to the earlier of the two -- so it's treated as due as soon as
+-- either one is, rather than only the first line encountered in the file.
 function M.scan(root)
   local items = {}
   each_file(root, function(path, kind, name, lines)
-    local seen = {}
+    local by_header = {}
+    local order = {}
     for i, line in ipairs(lines) do
       local date_t = marker_date(line)
       if date_t then
         local header = outline.header_for(lines, i)
-        if not seen[header] then
-          seen[header] = true
-          table.insert(
-            items,
-            { source = path, kind = kind, name = name, header = header, lines = lines, date_t = date_t, done = is_done(lines[header]) }
-          )
+        local item = by_header[header]
+        if not item then
+          item = { source = path, kind = kind, name = name, header = header, lines = lines, date_t = date_t, done = is_done(lines[header]) }
+          by_header[header] = item
+          table.insert(order, item)
+        else
+          item.date_t = math.min(item.date_t, date_t)
         end
       end
+    end
+    for _, item in ipairs(order) do
+      table.insert(items, item)
     end
   end)
   return items

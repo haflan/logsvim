@@ -18,7 +18,7 @@ end
 -- without ending the block (they may just be a paragraph break within its
 -- contents), but trimmed off the end. Returns the block's lines and the
 -- index of the first line after it (its "extent").
-function M.collect_block(lines, i)
+local function collect_block(lines, i)
   local indent = indent_len(lines[i])
   local block = { lines[i] }
   local j = i + 1
@@ -41,7 +41,7 @@ end
 -- preceding non-blank line with a strictly smaller indent than a running
 -- reference (updated on each hit), so multi-level nesting resolves fully
 -- rather than stopping at the single nearest shallower line.
-function M.ancestor_chain(lines, i)
+local function ancestor_chain(lines, i)
   local chain = {}
   local ref = indent_len(lines[i])
   local j = i - 1
@@ -60,7 +60,7 @@ end
 -- ancestor_chain, or `i` itself if none (shouldn't happen for a genuinely
 -- nested property line).
 function M.header_for(lines, i)
-  local chain = M.ancestor_chain(lines, i)
+  local chain = ancestor_chain(lines, i)
   return chain[#chain] or i
 end
 
@@ -93,7 +93,7 @@ function M.group(lines, headers)
   local roots, node_by_index, absorbed_until = {}, {}, 0
   for _, header in ipairs(unique) do
     if header >= absorbed_until then
-      local chain = M.ancestor_chain(lines, header)
+      local chain = ancestor_chain(lines, header)
       table.insert(chain, header)
 
       local parent = nil
@@ -109,7 +109,7 @@ function M.group(lines, headers)
 
       -- `parent` is now the node for `header` itself (the chain's last
       -- element), since the loop above always ends there.
-      local block, extent = M.collect_block(lines, header)
+      local block, extent = collect_block(lines, header)
       parent.block = block
       absorbed_until = math.max(absorbed_until, extent)
     end
@@ -134,5 +134,11 @@ function M.group(lines, headers)
   end
   return out
 end
+
+-- Internal accessors for the test suite only; not part of the public API.
+M._test = {
+  collect_block = collect_block,
+  ancestor_chain = ancestor_chain,
+}
 
 return M

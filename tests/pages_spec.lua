@@ -390,6 +390,46 @@ describe("pages.open buffer for a pseudo-page", function()
     close_buf(journal_buf)
   end)
 
+  it("goto_reference resolves each group by its own heading line, even when two groups share a display name", function()
+    local path = root .. "/journals/2026_07_30.md"
+    local before = helpers.read_file(path)
+    write_file(path, before:gsub("\n$", "") .. "\n\n- LATER From journal\n")
+    write_file(root .. "/pages/2026_07_30.md", "- LATER From page\n")
+
+    pages.open("LATER")
+    local sched_buf = vim.api.nvim_get_current_buf()
+
+    local heading_lines = {}
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(sched_buf, 0, -1, false)) do
+      if l == "### 2026_07_30" then
+        table.insert(heading_lines, i)
+      end
+    end
+    assert.are.equal(2, #heading_lines)
+
+    for _, lnum in ipairs(heading_lines) do
+      local group_text = table.concat(vim.api.nvim_buf_get_lines(sched_buf, lnum, lnum + 3, false), "\n")
+      local from_page = group_text:find("From page", 1, true) ~= nil
+
+      vim.api.nvim_set_current_buf(sched_buf)
+      vim.api.nvim_win_set_cursor(0, { lnum + 1, 0 })
+      pages.goto_reference(sched_buf)
+
+      local dest_buf = vim.api.nvim_get_current_buf()
+      local dest_name = vim.api.nvim_buf_get_name(dest_buf)
+      if from_page then
+        assert.truthy(dest_name:find("logsvim-page://", 1, true))
+      else
+        assert.truthy(dest_name:find("logsvim-journal://", 1, true))
+      end
+      if dest_buf ~= sched_buf then
+        close_buf(dest_buf)
+      end
+    end
+
+    close_buf(sched_buf)
+  end)
+
   it("rejects renaming a pseudo-page name", function()
     local message
     local original_notify = vim.notify
@@ -591,6 +631,21 @@ describe("pages.rename", function()
     vim.notify = original_notify
     assert.truthy(message)
     assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim.md"))
+  end)
+
+  it("rejects renaming a page onto a reserved pseudo-page name", function()
+    local message
+    local original_notify = vim.notify
+    vim.notify = function(msg)
+      message = msg
+    end
+
+    pages.rename(root, "Neovim", "TODO")
+
+    vim.notify = original_notify
+    assert.truthy(message and message:find("built%-in page"))
+    assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim.md"))
+    assert.are.equal(0, vim.fn.filereadable(root .. "/pages/TODO.md"))
   end)
 end)
 

@@ -166,7 +166,7 @@ function M.build_journal_block(topic, contents, assets)
   return lines
 end
 
-local function read_lines(path)
+function M.read_lines(path)
   local f = io.open(path, "r")
   if not f then
     return {}
@@ -182,7 +182,7 @@ end
 -- Append a block to `path`, creating the file (and parent dir) if absent.
 -- Blank-line separator when the file already has content.
 function M.append_block(path, block_lines)
-  local out = read_lines(path)
+  local out = M.read_lines(path)
 
   vim.fn.mkdir(vim.fs.dirname(path), "p")
 
@@ -201,7 +201,8 @@ function M.append_block(path, block_lines)
   f:close()
 end
 
-local function list_md_files(dir)
+-- Every "*.md" filename directly inside `dir` (not recursive), sorted.
+function M.list_md_files(dir)
   local files = {}
   local ok, entries = pcall(vim.fn.readdir, dir)
   if ok and entries then
@@ -211,6 +212,7 @@ local function list_md_files(dir)
       end
     end
   end
+  table.sort(files)
   return files
 end
 
@@ -248,9 +250,9 @@ function M.rename_page(root, old_name, new_name)
 
   local updated = 0
   for _, dir in ipairs({ M.journal_dir(root), M.pages_dir(root) }) do
-    for _, fname in ipairs(list_md_files(dir)) do
+    for _, fname in ipairs(M.list_md_files(dir)) do
       local path = dir .. "/" .. fname
-      local lines = read_lines(path)
+      local lines = M.read_lines(path)
       local file_changed = false
       for i, line in ipairs(lines) do
         local new_line, changed = replace_links_in_line(line, old_name, new_name)
