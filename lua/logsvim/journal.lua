@@ -119,8 +119,14 @@ function M.read(bufnr)
   vim.bo[bufnr].modified = false
 
   vim.keymap.set("n", "gd", function()
-    require("logsvim.pages").open_under_cursor()
-  end, { buffer = bufnr, desc = "logsvim: go to page under cursor" })
+    require("logsvim.pages").goto_under_cursor()
+  end, { buffer = bufnr, desc = "logsvim: go to reference under cursor" })
+  vim.keymap.set("n", "<CR>", function()
+    require("logsvim.pages").goto_under_cursor()
+  end, { buffer = bufnr, desc = "logsvim: go to reference under cursor" })
+  vim.keymap.set("n", "<leader>rn", function()
+    require("logsvim.pages").rename_under_cursor()
+  end, { buffer = bufnr, desc = "logsvim: rename page under cursor" })
   buffer.attach(bufnr)
 end
 

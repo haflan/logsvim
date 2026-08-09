@@ -186,10 +186,9 @@ function M.read(bufnr)
   state[bufnr] = st
   set_mark(bufnr, st, lines, content_end)
 
-  vim.keymap.set("n", "gd", M.open_under_cursor, { buffer = bufnr, desc = "logsvim: go to page under cursor" })
-  vim.keymap.set("n", "<CR>", function()
-    M.goto_reference(bufnr)
-  end, { buffer = bufnr, desc = "logsvim: jump to this reference's date in the journal" })
+  vim.keymap.set("n", "gd", M.goto_under_cursor, { buffer = bufnr, desc = "logsvim: go to reference under cursor" })
+  vim.keymap.set("n", "<CR>", M.goto_under_cursor, { buffer = bufnr, desc = "logsvim: go to reference under cursor" })
+  vim.keymap.set("n", "<leader>rn", M.rename_under_cursor, { buffer = bufnr, desc = "logsvim: rename page under cursor" })
 end
 
 -- Write the editable page-content region (above the linked-references
@@ -279,20 +278,130 @@ function M.open(name)
   end)
 end
 
--- Extract the [[Page Name]] under the cursor on the current line, if any,
--- and open it (like `gd`).
-function M.open_under_cursor()
+-- The [[Page Name]] under the cursor on the current line, if any.
+local function link_under_cursor()
   local line = vim.api.nvim_get_current_line()
   local col = vim.api.nvim_win_get_cursor(0)[2] + 1
 
   for s, name, e in line:gmatch("()%[%[([^%[%]]+)%]%]()") do
     if col >= s and col < e then
-      M.open(name)
-      return
+      return name
     end
+  end
+  return nil
+end
+
+-- Extract the [[Page Name]] under the cursor on the current line, if any,
+-- and open it (like `gd`).
+function M.open_under_cursor()
+  local name = link_under_cursor()
+  if not name then
+    vim.notify("logsvim: no [[Page]] link under cursor", vim.log.levels.WARN)
+    return
+  end
+  M.open(name)
+end
+
+-- Follow whatever's at the cursor, in either direction: a [[Page]] link
+-- opens that page (journal -> page, or page -> another page), and failing
+-- that, inside a page's linked-references view, the nearest "### <date>"
+-- heading at or above the cursor jumps to that date in the journal (page ->
+-- journal). Bound to both `gd` and <CR> in journal and page buffers, so
+-- either key follows either kind of reference.
+function M.goto_under_cursor()
+  local name = link_under_cursor()
+  if name then
+    M.open(name)
+    return
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  local root = scheme_parts(vim.api.nvim_buf_get_name(bufnr))
+  if root then
+    M.goto_reference(bufnr)
+    return
   end
 
   vim.notify("logsvim: no [[Page]] link under cursor", vim.log.levels.WARN)
+end
+
+-- Reload every open logsvim buffer for `root` that could show stale text
+-- after `old_name` was renamed to `new_name`: the renamed page's own buffer
+-- (whose identity changes, so it's closed and reopened under the new name)
+-- and every other page buffer (whose content or linked references may quote
+-- the old name). Buffers with unsaved changes are left alone and flagged,
+-- since overwriting them could either discard edits or silently resurrect
+-- the old name on next save.
+local function reload_page_buffers(root, old_name, new_name)
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(bufnr) then
+      local buf_root, name = scheme_parts(vim.api.nvim_buf_get_name(bufnr))
+      if buf_root == root then
+        if vim.bo[bufnr].modified then
+          vim.notify(
+            "logsvim: " .. vim.api.nvim_buf_get_name(bufnr) .. " has unsaved changes; reload manually after the rename",
+            vim.log.levels.WARN
+          )
+        elseif name == old_name then
+          local was_current = bufnr == vim.api.nvim_get_current_buf()
+          vim.api.nvim_buf_delete(bufnr, { force = true })
+          if was_current then
+            M.open(new_name)
+          end
+        else
+          M.read(bufnr)
+        end
+      end
+    end
+  end
+end
+
+-- Rename `old_name` to `new_name` everywhere: every [[old_name]] reference
+-- across journals/pages, the page file itself (if any), and any open
+-- buffers that would otherwise show stale text.
+function M.rename(root, old_name, new_name)
+  local updated, err = graph.rename_page(root, old_name, new_name)
+  if not updated then
+    vim.notify(err, vim.log.levels.ERROR)
+    return
+  end
+
+  reload_page_buffers(root, old_name, new_name)
+  local journal_bufnr = vim.fn.bufnr("logsvim-journal://" .. root)
+  if journal_bufnr ~= -1 and vim.api.nvim_buf_is_loaded(journal_bufnr) then
+    if vim.bo[journal_bufnr].modified then
+      vim.notify("logsvim: journal buffer has unsaved changes; reload manually (:e!) after the rename", vim.log.levels.WARN)
+    else
+      journal.read(journal_bufnr)
+    end
+  end
+
+  index.refresh(root)
+  vim.notify(("logsvim: renamed [[%s]] to [[%s]] (%d file(s) updated)"):format(old_name, new_name, updated), vim.log.levels.INFO)
+end
+
+-- Prompt for a new name and rename the [[Page Name]] link under the cursor
+-- everywhere in the graph. Meant for use from a reference to a page (a
+-- [[link]] in a journal entry or in another page's linked-references view),
+-- not from the page's own buffer, which has no [[link]] syntax to target.
+function M.rename_under_cursor()
+  local name = link_under_cursor()
+  if not name then
+    vim.notify("logsvim: no [[Page]] link under cursor", vim.log.levels.WARN)
+    return
+  end
+
+  graph.resolve_root(function(root)
+    if not root then
+      return
+    end
+    vim.ui.input({ prompt = "logsvim: rename [[" .. name .. "]] to: ", default = name }, function(new_name)
+      if not new_name or new_name == "" or new_name == name then
+        return
+      end
+      M.rename(root, name, new_name)
+    end)
+  end)
 end
 
 function M.setup_autocmds()

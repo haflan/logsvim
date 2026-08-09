@@ -101,6 +101,65 @@ describe("graph.ensure_journal_file", function()
   end)
 end)
 
+describe("graph.rename_page", function()
+  local root
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root })
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  it("rewrites every [[old]] reference to [[new]] across journals and pages, and renames the page file", function()
+    local updated = graph.rename_page(root, "Neovim", "Neovim Editor")
+    assert.are.equal(2, updated)
+
+    assert.truthy(helpers.read_file(root .. "/journals/2026_07_30.md"):find("[[Neovim Editor]]", 1, true))
+    assert.is_falsy(helpers.read_file(root .. "/journals/2026_07_30.md"):find("[[Neovim]]", 1, true))
+    assert.truthy(helpers.read_file(root .. "/journals/2026_08_01.md"):find("[[Neovim Editor]]", 1, true))
+
+    assert.are.equal(0, vim.fn.filereadable(root .. "/pages/Neovim.md"))
+    assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim Editor.md"))
+  end)
+
+  it("leaves links to other pages with a similar name untouched", function()
+    graph.rename_page(root, "Neovim", "Neovim Editor")
+    assert.truthy(helpers.read_file(root .. "/journals/2026_07_31.md"):find("[[Plugin Ideas]]", 1, true))
+  end)
+
+  it("updates references without touching the filesystem for a page with no file of its own", function()
+    local updated = graph.rename_page(root, "Plugin Ideas", "Ideas")
+    assert.are.equal(2, updated)
+    assert.are.equal(0, vim.fn.filereadable(root .. "/pages/Plugin Ideas.md"))
+    assert.are.equal(0, vim.fn.filereadable(root .. "/pages/Ideas.md"))
+    assert.truthy(helpers.read_file(root .. "/journals/2026_07_31.md"):find("[[Ideas]]", 1, true))
+  end)
+
+  it("errors instead of clobbering an existing page with the new name", function()
+    local f = io.open(root .. "/pages/Taken.md", "w")
+    f:write("x\n")
+    f:close()
+
+    local updated, err = graph.rename_page(root, "Neovim", "Taken")
+    assert.is_nil(updated)
+    assert.truthy(err)
+    assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim.md"))
+  end)
+
+  it("errors on an empty or unchanged new name", function()
+    local updated, err = graph.rename_page(root, "Neovim", "")
+    assert.is_nil(updated)
+    assert.truthy(err)
+
+    updated, err = graph.rename_page(root, "Neovim", "Neovim")
+    assert.is_nil(updated)
+    assert.truthy(err)
+  end)
+end)
+
 describe("graph.looks_like_root", function()
   local root
 

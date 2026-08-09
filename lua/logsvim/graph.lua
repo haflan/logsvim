@@ -201,6 +201,83 @@ function M.append_block(path, block_lines)
   f:close()
 end
 
+local function list_md_files(dir)
+  local files = {}
+  local ok, entries = pcall(vim.fn.readdir, dir)
+  if ok and entries then
+    for _, fname in ipairs(entries) do
+      if fname:match("%.md$") then
+        table.insert(files, fname)
+      end
+    end
+  end
+  return files
+end
+
+-- Rewrite every "[[old_name]]" occurrence on `line` to "[[new_name]]",
+-- leaving other links untouched. Uses a match callback rather than a
+-- pattern-string replacement so neither name needs Lua-pattern escaping.
+local function replace_links_in_line(line, old_name, new_name)
+  local changed = false
+  local result = line:gsub("%[%[([^%[%]]+)%]%]", function(name)
+    if name == old_name then
+      changed = true
+      return "[[" .. new_name .. "]]"
+    end
+    return "[[" .. name .. "]]"
+  end)
+  return result, changed
+end
+
+-- Rename a page: rewrite every "[[old_name]]" reference to "[[new_name]]"
+-- across every journal and page file, then rename pages/<old_name>.md to
+-- pages/<new_name>.md if it exists (a page referenced only via [[links]],
+-- with no file of its own, has nothing to rename on disk). Returns the
+-- number of files whose content was rewritten, or nil + an error message if
+-- the rename can't proceed.
+function M.rename_page(root, old_name, new_name)
+  if not new_name or new_name == "" or new_name == old_name then
+    return nil, "logsvim: invalid new page name"
+  end
+
+  local old_path = M.pages_dir(root) .. "/" .. old_name .. ".md"
+  local new_path = M.pages_dir(root) .. "/" .. new_name .. ".md"
+  if vim.fn.filereadable(old_path) == 1 and vim.fn.filereadable(new_path) == 1 then
+    return nil, "logsvim: a page named " .. new_name .. " already exists"
+  end
+
+  local updated = 0
+  for _, dir in ipairs({ M.journal_dir(root), M.pages_dir(root) }) do
+    for _, fname in ipairs(list_md_files(dir)) do
+      local path = dir .. "/" .. fname
+      local lines = read_lines(path)
+      local file_changed = false
+      for i, line in ipairs(lines) do
+        local new_line, changed = replace_links_in_line(line, old_name, new_name)
+        if changed then
+          lines[i] = new_line
+          file_changed = true
+        end
+      end
+      if file_changed then
+        local f, err = io.open(path, "w")
+        if not f then
+          error("logsvim: failed to write " .. path .. ": " .. tostring(err))
+        end
+        f:write(table.concat(lines, "\n") .. "\n")
+        f:close()
+        updated = updated + 1
+      end
+    end
+  end
+
+  if vim.fn.filereadable(old_path) == 1 then
+    vim.fn.rename(old_path, new_path)
+  end
+
+  return updated
+end
+
 -- Internal accessor for the test suite only; not part of the public API.
 M._test = {
   reset_resolved_root = function()

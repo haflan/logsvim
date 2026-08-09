@@ -231,3 +231,230 @@ describe("pages.open_under_cursor", function()
     close_buf(page_buf)
   end)
 end)
+
+describe("pages.goto_under_cursor", function()
+  local root
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root })
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  it("opens the page whose [[link]] the cursor is on, same as open_under_cursor", function()
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "  - see [[Neovim]] for details" })
+    vim.api.nvim_set_current_buf(bufnr)
+    vim.api.nvim_win_set_cursor(0, { 1, 12 }) -- inside "Neovim"
+
+    pages.goto_under_cursor()
+
+    local page_buf = vim.api.nvim_get_current_buf()
+    assert.are.equal("# Neovim", vim.api.nvim_buf_get_lines(page_buf, 0, 1, false)[1])
+    close_buf(page_buf)
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end)
+
+  it("falls back to jumping to the referencing date when the cursor isn't on a [[link]]", function()
+    pages.open("Neovim")
+    local page_buf = vim.api.nvim_get_current_buf()
+
+    local lnum
+    local lines = vim.api.nvim_buf_get_lines(page_buf, 0, -1, false)
+    for i, l in ipairs(lines) do
+      if l == "### 2026_07_30" then
+        lnum = i
+        break
+      end
+    end
+    assert.truthy(lnum)
+    vim.api.nvim_win_set_cursor(0, { lnum + 1, 0 })
+
+    pages.goto_under_cursor()
+
+    local journal_buf = vim.api.nvim_get_current_buf()
+    assert.are.equal("acwrite", vim.bo[journal_buf].buftype)
+    assert.are.equal("# 2026_07_30", vim.api.nvim_get_current_line())
+
+    close_buf(page_buf)
+    close_buf(journal_buf)
+  end)
+
+  it("warns instead of erroring outside a page buffer when there's no [[link]] under the cursor", function()
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "just some text" })
+    vim.api.nvim_set_current_buf(bufnr)
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+
+    local message
+    local original_notify = vim.notify
+    vim.notify = function(msg)
+      message = msg
+    end
+
+    pages.goto_under_cursor()
+
+    vim.notify = original_notify
+    assert.truthy(message and message:find("no %[%[Page%]%] link under cursor"))
+
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end)
+end)
+
+describe("pages.rename", function()
+  local root
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root })
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  it("renames a page's file and updates every reference", function()
+    pages.rename(root, "Neovim", "Neovim Editor")
+
+    assert.are.equal(0, vim.fn.filereadable(root .. "/pages/Neovim.md"))
+    assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim Editor.md"))
+    assert.truthy(helpers.read_file(root .. "/journals/2026_08_01.md"):find("[[Neovim Editor]]", 1, true))
+  end)
+
+  it("closes the renamed page's own buffer and reopens it under the new name", function()
+    pages.open("Neovim")
+    local old_bufnr = vim.api.nvim_get_current_buf()
+
+    pages.rename(root, "Neovim", "Neovim Editor")
+
+    assert.is_false(vim.api.nvim_buf_is_valid(old_bufnr))
+    local new_bufnr = vim.api.nvim_get_current_buf()
+    assert.are.equal("# Neovim Editor", vim.api.nvim_buf_get_lines(new_bufnr, 0, 1, false)[1])
+
+    close_buf(new_bufnr)
+  end)
+
+  it("reloads an unrelated, unmodified page buffer whose references quote the renamed page", function()
+    pages.open("Neovim")
+    local neovim_buf = vim.api.nvim_get_current_buf()
+
+    pages.rename(root, "Plugin Ideas", "Ideas")
+
+    local text = table.concat(vim.api.nvim_buf_get_lines(neovim_buf, 0, -1, false), "\n")
+    assert.truthy(text:find("[[Ideas]]", 1, true))
+    assert.is_falsy(text:find("[[Plugin Ideas]]", 1, true))
+
+    close_buf(neovim_buf)
+  end)
+
+  it("leaves a modified buffer alone and warns instead of silently discarding its edits", function()
+    pages.open("Neovim")
+    local bufnr = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(bufnr, 2, 2, false, { "unsaved edit" })
+
+    local messages = {}
+    local original_notify = vim.notify
+    vim.notify = function(msg)
+      table.insert(messages, msg)
+    end
+
+    pages.rename(root, "Neovim", "Neovim Editor")
+
+    vim.notify = original_notify
+    local warned = false
+    for _, msg in ipairs(messages) do
+      if msg:find("unsaved changes", 1, true) then
+        warned = true
+      end
+    end
+    assert.is_true(warned)
+    assert.is_true(vim.api.nvim_buf_is_valid(bufnr))
+    -- the underlying file was still renamed even though this buffer is stale
+    assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim Editor.md"))
+
+    close_buf(bufnr)
+  end)
+
+  it("errors instead of clobbering an existing page with the new name", function()
+    local f = io.open(root .. "/pages/Taken.md", "w")
+    f:write("x\n")
+    f:close()
+
+    local message
+    local original_notify = vim.notify
+    vim.notify = function(msg)
+      message = msg
+    end
+
+    pages.rename(root, "Neovim", "Taken")
+
+    vim.notify = original_notify
+    assert.truthy(message)
+    assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim.md"))
+  end)
+end)
+
+describe("pages.rename_under_cursor", function()
+  local root, bufnr
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root })
+    bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "  - see [[Neovim]] for details" })
+    vim.api.nvim_set_current_buf(bufnr)
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end)
+
+  it("prompts for a new name and renames the [[Page]] link under the cursor", function()
+    vim.api.nvim_win_set_cursor(0, { 1, 12 }) -- inside "Neovim"
+
+    local original_input = vim.ui.input
+    vim.ui.input = function(_, on_confirm)
+      on_confirm("Neovim Editor")
+    end
+
+    pages.rename_under_cursor()
+
+    vim.ui.input = original_input
+
+    assert.are.equal(0, vim.fn.filereadable(root .. "/pages/Neovim.md"))
+    assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim Editor.md"))
+  end)
+
+  it("does nothing when there is no [[Page]] link under the cursor", function()
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+
+    local called = false
+    local original_input = vim.ui.input
+    vim.ui.input = function()
+      called = true
+    end
+
+    pages.rename_under_cursor()
+
+    vim.ui.input = original_input
+    assert.is_false(called)
+  end)
+
+  it("does nothing when the prompt is cancelled", function()
+    vim.api.nvim_win_set_cursor(0, { 1, 12 })
+
+    local original_input = vim.ui.input
+    vim.ui.input = function(_, on_confirm)
+      on_confirm(nil)
+    end
+
+    pages.rename_under_cursor()
+
+    vim.ui.input = original_input
+    assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim.md"))
+  end)
+end)

@@ -9,24 +9,32 @@ editing — without running Logseq itself.
 > coding assistant, for personal use, to cover the small slice of Logseq's
 > features its author actually relies on day to day. It has not been
 > extensively reviewed line-by-line, is not a full Logseq replacement (there's
-> no query language, no tags/properties, no task states, no page renaming,
-> and more — see "What this isn't" below), and comes with no warranty. Read
-> the code before trusting it with data you care about.
+> no query language, no tags/properties, no task states, and more — see "What
+> this isn't" below), and comes with no warranty. Read the code before
+> trusting it with data you care about.
 
 ## Features
 
 - `:LogsvimJournal` — a single scrollable, editable buffer over all of your
   daily journal files, newest first, lazy-loaded as you scroll. Saving only
   rewrites the days you actually changed.
-- `:LogsvimPage <name>` — a read-only view of a page: its own content (if
+- `:LogsvimPage <name>` — a view of a page: its own editable content (if
   any), followed by every journal block that references `[[name]]`, grouped
-  by date (Logseq's "linked references").
-- Logseq-style bullet editing: `<CR>` and `o`/`O` always start a fresh
-  `- ` bullet at the anchor line's indentation, and `<Tab>`/`<S-Tab>` in
-  insert mode indent/dedent the current line.
+  by date (Logseq's "linked references", read-only).
+- Logseq-style bullet editing: insert-mode `<CR>` and normal-mode `o`/`O`
+  always start a fresh `- ` bullet at the anchor line's indentation, and
+  `<Tab>`/`<S-Tab>` in insert mode indent/dedent the current line.
+- `gd` and normal-mode `<CR>` follow whatever's under the cursor, in either
+  direction: a `[[Page]]` link opens that page, and failing that, in a
+  page's linked references, the nearest date heading jumps to that day in
+  the journal.
 - `[[Page]]` link completion via [nvim-cmp](https://github.com/hrsh7th/nvim-cmp),
   backed by an index of every page name mentioned anywhere in the graph
   (kept up to date automatically on save).
+- Page renaming (`<leader>rn` on a `[[Page]]` link, in the journal or in a
+  page's linked references): rewrites every `[[old]]` reference across
+  journals and pages, and renames the page's own file if it has one. Not yet
+  supported from within the page's own buffer.
 - Matches Logseq's own file/config.edn conventions (journal filename format,
   bullet indentation styles) so files stay interoperable with Logseq itself.
 
@@ -37,7 +45,7 @@ Deliberately out of scope, or just not built yet:
 - The query language (`{{query ...}}`, advanced queries).
 - Tags (`#tag`), page/block properties (`key:: value`), task markers
   (`TODO`/`DOING`/...), block references/embeds.
-- Renaming or deleting pages (and rewriting their backlinks).
+- Deleting pages, or renaming a page from within its own buffer.
 - Graph view, whiteboards, flashcards, or a plugin/marketplace API.
 
 ## Requirements
