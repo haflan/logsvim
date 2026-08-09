@@ -24,17 +24,18 @@ editing — without running Logseq itself.
 - Logseq-style bullet editing: insert-mode `<CR>` and normal-mode `o`/`O`
   always start a fresh `- ` bullet at the anchor line's indentation, and
   `<Tab>`/`<S-Tab>` in insert mode indent/dedent the current line.
-- `gd` and normal-mode `<CR>` follow whatever's under the cursor, in either
-  direction: a `[[Page]]` link opens that page, and failing that, in a
-  page's linked references, the nearest date heading jumps to that day in
-  the journal.
+- `gd` and normal-mode `<CR>` (configurable, see `keymaps.goto_reference`)
+  follow whatever's under the cursor, in either direction: a `[[Page]]` link
+  opens that page, and failing that, in a page's linked references, the
+  nearest date heading jumps to that day in the journal.
 - `[[Page]]` link completion via [nvim-cmp](https://github.com/hrsh7th/nvim-cmp),
   backed by an index of every page name mentioned anywhere in the graph
   (kept up to date automatically on save).
-- Page renaming (`<leader>rn` on a `[[Page]]` link, in the journal or in a
-  page's linked references): rewrites every `[[old]]` reference across
-  journals and pages, and renames the page's own file if it has one. Not yet
-  supported from within the page's own buffer.
+- Page renaming (`<leader>rn` on a `[[Page]]` link, configurable via
+  `keymaps.rename`, in the journal or in a page's linked references):
+  rewrites every `[[old]]` reference across journals and pages, and renames
+  the page's own file if it has one. Not yet supported from within the
+  page's own buffer.
 - Matches Logseq's own file/config.edn conventions (journal filename format,
   bullet indentation styles) so files stay interoperable with Logseq itself.
 
@@ -90,6 +91,12 @@ require('logsvim').setup {
   journal_batch_size = 14,
   -- Where the [[Page]] link index (used for completion) is cached on disk.
   cache_dir = "~/.cache/logsvim",
+  -- Normal-mode keymaps set in journal/page buffers. Each value is a key or
+  -- list of keys, or false to leave that action unbound.
+  keymaps = {
+    goto_reference = { "gd", "<CR>" },
+    rename = "<leader>rn",
+  },
 }
 ```
 

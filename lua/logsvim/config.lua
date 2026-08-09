@@ -15,6 +15,12 @@ M.defaults = {
   journal_batch_size = 14,
   -- Where the [[Page]] link index (used for completion) is cached on disk.
   cache_dir = "~/.cache/logsvim",
+  -- Normal-mode keymaps set in journal/page buffers. Each value is a key or
+  -- list of keys, or false to leave that action unbound.
+  keymaps = {
+    goto_reference = { "gd", "<CR>" },
+    rename = "<leader>rn",
+  },
 }
 
 M.options = vim.deepcopy(M.defaults)
@@ -25,8 +31,31 @@ M.options = vim.deepcopy(M.defaults)
 M.explicit_root = false
 
 function M.setup(opts)
-  M.options = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
-  M.explicit_root = opts ~= nil and opts.root ~= nil
+  opts = opts or {}
+  M.options = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts)
+  -- Recompute `keymaps` as a shallow, per-action merge rather than trusting
+  -- the deep_extend above: since goto_reference's default is itself a list,
+  -- deep-merging it against a user-supplied shorter list would merge by
+  -- index and leave a stray default entry behind instead of replacing it.
+  if opts.keymaps then
+    M.options.keymaps = vim.tbl_extend("force", vim.deepcopy(M.defaults.keymaps), opts.keymaps)
+  end
+  M.explicit_root = opts.root ~= nil
+end
+
+-- Bind `rhs` to every key configured for keymaps.<name> (e.g.
+-- "goto_reference") in buffer `bufnr`. No-op if that action is unset/false.
+function M.set_keymap(bufnr, name, rhs, desc)
+  local lhs = M.options.keymaps and M.options.keymaps[name]
+  if not lhs then
+    return
+  end
+  if type(lhs) == "string" then
+    lhs = { lhs }
+  end
+  for _, key in ipairs(lhs) do
+    vim.keymap.set("n", key, rhs, { buffer = bufnr, desc = desc })
+  end
 end
 
 return M

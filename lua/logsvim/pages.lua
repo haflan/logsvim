@@ -1,3 +1,4 @@
+local config = require("logsvim.config")
 local graph = require("logsvim.graph")
 local journal = require("logsvim.journal")
 local index = require("logsvim.index")
@@ -186,9 +187,8 @@ function M.read(bufnr)
   state[bufnr] = st
   set_mark(bufnr, st, lines, content_end)
 
-  vim.keymap.set("n", "gd", M.goto_under_cursor, { buffer = bufnr, desc = "logsvim: go to reference under cursor" })
-  vim.keymap.set("n", "<CR>", M.goto_under_cursor, { buffer = bufnr, desc = "logsvim: go to reference under cursor" })
-  vim.keymap.set("n", "<leader>rn", M.rename_under_cursor, { buffer = bufnr, desc = "logsvim: rename page under cursor" })
+  config.set_keymap(bufnr, "goto_reference", M.goto_under_cursor, "logsvim: go to reference under cursor")
+  config.set_keymap(bufnr, "rename", M.rename_under_cursor, "logsvim: rename page under cursor")
 end
 
 -- Write the editable page-content region (above the linked-references
