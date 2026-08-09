@@ -40,10 +40,16 @@ local PSEUDO_PAGES = {
     return schedule.due(root)
   end,
 }
+-- Display order for completion (see M.completion_names): "Scheduled" first,
+-- then each task-marker status in schedule.MARKERS' order. PSEUDO_PAGES
+-- itself is a plain string-keyed table, so this is the only place that
+-- order is recorded.
+local PSEUDO_PAGE_NAMES = { "Scheduled" }
 for _, status in ipairs(schedule.MARKERS) do
   PSEUDO_PAGES[status] = function(root)
     return schedule.by_marker(root, status)
   end
+  table.insert(PSEUDO_PAGE_NAMES, status)
 end
 
 local function line_references(line, name)
@@ -275,6 +281,31 @@ function M.goto_reference(bufnr)
     end
   end
   vim.notify("logsvim: no referencing date found above the cursor", vim.log.levels.WARN)
+end
+
+-- Completion candidates for :LogsvimPage: pseudo-pages that currently have
+-- something to show, in PSEUDO_PAGE_NAMES order (Scheduled, then each
+-- task-marker status), followed by every known real page name. An empty
+-- pseudo-page is left off the list -- opening it would show nothing -- and
+-- a real name that happens to collide with a pseudo-page name is skipped
+-- since the pseudo-page entry already covers it.
+function M.completion_names(root)
+  local names, seen = {}, {}
+
+  for _, name in ipairs(PSEUDO_PAGE_NAMES) do
+    if #PSEUDO_PAGES[name](root) > 0 then
+      table.insert(names, name)
+      seen[name] = true
+    end
+  end
+
+  for _, name in ipairs(index.names(root)) do
+    if not seen[name] then
+      table.insert(names, name)
+    end
+  end
+
+  return names
 end
 
 function M.open(name)

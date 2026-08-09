@@ -157,6 +157,74 @@ describe("pages.render for a pseudo-page", function()
   end)
 end)
 
+describe("pages.completion_names", function()
+  local root, index
+
+  local function write_file(path, content)
+    local f = io.open(path, "w")
+    f:write(content)
+    f:close()
+  end
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root })
+    index = require("logsvim.index")
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  it("lists only pseudo-pages that currently have something to show, before real page names", function()
+    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
+
+    local original_names = index.names
+    index.names = function()
+      return { "Neovim", "Project" }
+    end
+    local names = pages.completion_names(root)
+    index.names = original_names
+
+    -- "Scheduled" and "TODO" both have a match from the TODO block above;
+    -- every other pseudo-page is empty and left out.
+    assert.are.same({ "Scheduled", "TODO", "Neovim", "Project" }, names)
+  end)
+
+  it("keeps PSEUDO_PAGE_NAMES order (Scheduled, then MARKERS order) among populated pseudo-pages", function()
+    write_file(root .. "/pages/A.md", "- LATER A\n")
+    write_file(root .. "/pages/B.md", "- TODO B\n  SCHEDULED: <2020-01-01 Wed>\n")
+
+    local original_names = index.names
+    index.names = function()
+      return {}
+    end
+    local names = pages.completion_names(root)
+    index.names = original_names
+
+    assert.are.same({ "Scheduled", "TODO", "LATER" }, names)
+  end)
+
+  it("skips a real page name that collides with a populated pseudo-page name", function()
+    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
+
+    local original_names = index.names
+    index.names = function()
+      return { "TODO" }
+    end
+    local names = pages.completion_names(root)
+    index.names = original_names
+
+    local count = 0
+    for _, name in ipairs(names) do
+      if name == "TODO" then
+        count = count + 1
+      end
+    end
+    assert.are.equal(1, count)
+  end)
+end)
+
 describe("pages.open buffer", function()
   local root
 

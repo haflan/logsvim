@@ -10,3 +10,11 @@ package.path = plugin_root .. "/?.lua;" .. plugin_root .. "/?/init.lua;" .. pack
 
 vim.cmd("runtime plugin/plenary.vim")
 vim.cmd("runtime plugin/logsvim.lua")
+
+-- Every config.setup() call re-derives M.options from M.defaults, so
+-- overriding the default here once keeps every test's index.refresh()
+-- writes (async, via index.lua's write_cache) inside a throwaway tempdir
+-- instead of the user's real cache_dir -- no spec file needs to remember to
+-- pass cache_dir itself. Individual tests that care about cache_dir's
+-- content (graph_spec.lua, index_spec.lua) still set their own on top.
+require("logsvim.config").defaults.cache_dir = vim.fn.tempname()
