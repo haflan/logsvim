@@ -2,6 +2,8 @@ local config = require("logsvim.config")
 local graph = require("logsvim.graph")
 local journal = require("logsvim.journal")
 local index = require("logsvim.index")
+local outline = require("logsvim.outline")
+local schedule = require("logsvim.schedule")
 
 local M = {}
 
@@ -9,16 +11,36 @@ local ns = vim.api.nvim_create_namespace("logsvim_pages")
 
 -- Row (0-indexed) where the editable page-content region always starts:
 -- row 0 is the "# name" header, row 1 is a structural blank separator.
+-- Pseudo-pages (below) have no editable region at all -- everything from
+-- here on is the read-only aggregation.
 local CONTENT_START = 2
 
--- bufnr -> { root, name, mark }. `mark` is an extmark at the row (0-indexed)
--- where the read-only "Linked references" section begins, or nil if the
--- page currently has no references (in which case everything from
--- CONTENT_START to the end of the buffer is page content).
+-- bufnr -> { root, name, mark, pseudo, heading_kind }. `mark` is an extmark
+-- at the row (0-indexed) where the read-only aggregation section begins, or
+-- nil if the page currently has nothing to show there (in which case
+-- everything from CONTENT_START to the end of the buffer is page content).
+-- `heading_kind` maps each "### <name>" heading currently in the buffer to
+-- "journal" or "page", so goto_reference() knows which one to jump to.
 local state = {}
 
-local function indent_len(line)
-  return #(line:match("^[ \t]*"))
+-- "Pseudo-pages": synthetic, read-only pages that don't correspond to a
+-- real pages/<name>.md file. Opening one (via :LogsvimPage, or a [[Name]]
+-- link + gd/<CR>, exactly like any other page) shows a live, graph-wide
+-- aggregation instead of a real file's content + backlinks: "Scheduled"
+-- lists SCHEDULED/DEADLINE blocks due today or earlier that aren't done
+-- yet, and one page per Logseq task marker (TODO, DOING, NOW, LATER,
+-- WAITING, IN-PROGRESS, DONE, CANCELED, CANCELLED) lists every block
+-- currently carrying that marker -- anywhere in the graph, grouped by
+-- source and re-indented under its ancestor context (see outline.lua).
+local PSEUDO_PAGES = {
+  Scheduled = function(root)
+    return schedule.due(root)
+  end,
+}
+for _, status in ipairs(schedule.MARKERS) do
+  PSEUDO_PAGES[status] = function(root)
+    return schedule.by_marker(root, status)
+  end
 end
 
 local function line_references(line, name)
@@ -28,29 +50,6 @@ local function line_references(line, name)
     end
   end
   return false
-end
-
--- Collect the bullet block starting at line `i`: its own line plus every
--- more-deeply-indented line below it. Blank lines are passed through without
--- ending the block (they may just be a paragraph break within its contents),
--- but trimmed off the end. Returns the block's lines and the index of the
--- first line after it.
-local function collect_block(lines, i)
-  local indent = indent_len(lines[i])
-  local block = { lines[i] }
-  local j = i + 1
-  while j <= #lines do
-    if lines[j] == "" or indent_len(lines[j]) > indent then
-      table.insert(block, lines[j])
-      j = j + 1
-    else
-      break
-    end
-  end
-  while #block > 0 and block[#block] == "" do
-    table.remove(block)
-  end
-  return block, j
 end
 
 local function read_lines(path)
@@ -85,25 +84,22 @@ local function list_journal_files(root)
   return files
 end
 
--- Journal blocks (and their subblocks) that reference "[[name]]", grouped by
--- date, newest first: { { date = "2026_08_01", blocks = { {line, ...}, ... } }, ... }
+-- Journal blocks that reference "[[name]]", grouped by date, newest first,
+-- with each match's ancestor context included and same-context matches
+-- merged together (see outline.lua):
+-- { { date = "2026_08_01", lines = {...outline...} }, ... }
 function M.find_references(root, name)
   local groups = {}
   for _, filename in ipairs(list_journal_files(root)) do
     local lines = read_lines(graph.journal_dir(root) .. "/" .. filename)
-    local blocks = {}
-    local i = 1
-    while i <= #lines do
-      if line_references(lines[i], name) then
-        local block, next_i = collect_block(lines, i)
-        table.insert(blocks, block)
-        i = next_i
-      else
-        i = i + 1
+    local headers = {}
+    for i, line in ipairs(lines) do
+      if line_references(line, name) then
+        table.insert(headers, i)
       end
     end
-    if #blocks > 0 then
-      table.insert(groups, { date = graph.filename_display(filename), blocks = blocks })
+    if #headers > 0 then
+      table.insert(groups, { date = graph.filename_display(filename), lines = outline.group(lines, headers) })
     end
   end
   return groups
@@ -117,12 +113,43 @@ local function page_content(root, name)
   return read_lines(path)
 end
 
--- Render the page view for `name`: an editable header + page content (from
--- pages/<name>.md, if it exists), followed by a read-only "linked
--- references" section listing every journal block that references it,
--- grouped by date. Returns the lines plus the 0-indexed row at which the
--- linked-references section begins (== #lines if there are no references).
+-- Render a pseudo-page: "# name" plus its aggregated groups, each under a
+-- "### <source>" heading, with no editable region at all (content_end ==
+-- CONTENT_START unconditionally). `heading_kind` maps each heading to its
+-- source's kind ("journal" or "page") for goto_reference() to consult.
+local function render_pseudo(root, name, provider)
+  local lines = { "# " .. name, "" }
+  local heading_kind = {}
+
+  for gi, group in ipairs(provider(root)) do
+    if gi > 1 then
+      table.insert(lines, "")
+    end
+    table.insert(lines, "### " .. group.name)
+    heading_kind[group.name] = group.kind
+    table.insert(lines, "")
+    for _, l in ipairs(group.lines) do
+      table.insert(lines, l)
+    end
+  end
+
+  return lines, CONTENT_START, heading_kind
+end
+
+-- Render the page view for `name`: for a pseudo-page (see PSEUDO_PAGES
+-- above), its live aggregation with no editable region; otherwise an
+-- editable header + page content (from pages/<name>.md, if it exists),
+-- followed by a read-only "linked references" section listing every
+-- journal block that references it, grouped by date. Returns the lines,
+-- the 0-indexed row at which the read-only section begins (== #lines if
+-- there's nothing to show there), and a heading->kind map for
+-- goto_reference() (always "journal" for linked references; per-group for
+-- a pseudo-page).
 function M.render(root, name)
+  if PSEUDO_PAGES[name] then
+    return render_pseudo(root, name, PSEUDO_PAGES[name])
+  end
+
   local lines = { "# " .. name, "" }
 
   local content = page_content(root, name) or {}
@@ -140,16 +167,14 @@ function M.render(root, name)
     for _, group in ipairs(groups) do
       table.insert(lines, "")
       table.insert(lines, "### " .. group.date)
-      for _, block in ipairs(group.blocks) do
-        table.insert(lines, "")
-        for _, l in ipairs(block) do
-          table.insert(lines, l)
-        end
+      table.insert(lines, "")
+      for _, l in ipairs(group.lines) do
+        table.insert(lines, l)
       end
     end
   end
 
-  return lines, content_end
+  return lines, content_end, {}
 end
 
 local function scheme_parts(bufname)
@@ -179,11 +204,11 @@ function M.read(bufnr)
   vim.bo[bufnr].filetype = "markdown"
   vim.bo[bufnr].swapfile = false
 
-  local lines, content_end = M.render(root, name)
+  local lines, content_end, heading_kind = M.render(root, name)
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modified = false
 
-  local st = { root = root, name = name, mark = nil }
+  local st = { root = root, name = name, mark = nil, pseudo = PSEUDO_PAGES[name] ~= nil, heading_kind = heading_kind }
   state[bufnr] = st
   set_mark(bufnr, st, lines, content_end)
 
@@ -191,11 +216,13 @@ function M.read(bufnr)
   config.set_keymap(bufnr, "rename", M.rename_under_cursor, "logsvim: rename page under cursor")
 end
 
--- Write the editable page-content region (above the linked-references
--- boundary, if any) to pages/<name>.md, creating the file (and pages/ dir)
--- if it doesn't exist yet. The linked-references section is never read from
--- the buffer, and the whole buffer is re-rendered from disk afterwards, so
--- any stray edits made there are discarded rather than persisted.
+-- Write the editable page-content region (above the read-only boundary, if
+-- any) to pages/<name>.md, creating the file (and pages/ dir) if it doesn't
+-- exist yet. The read-only section is never read from the buffer, and the
+-- whole buffer is re-rendered afterwards, so any stray edits made there are
+-- discarded rather than persisted. A pseudo-page (see PSEUDO_PAGES) has no
+-- editable region at all -- writing one just re-renders it against the
+-- current graph state, without touching pages/<name>.md or reindexing.
 function M.write(bufnr)
   local st = state[bufnr]
   if not st then
@@ -203,52 +230,65 @@ function M.write(bufnr)
     return
   end
 
-  local content_end
-  if st.mark then
-    content_end = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, st.mark, {})[1]
-  else
-    content_end = vim.api.nvim_buf_line_count(bufnr)
-  end
-
-  local content = {}
-  if content_end > CONTENT_START then
-    content = vim.api.nvim_buf_get_lines(bufnr, CONTENT_START, content_end, false)
-  end
-
-  local path = graph.pages_dir(st.root) .. "/" .. st.name .. ".md"
-  if #content > 0 or vim.fn.filereadable(path) == 1 then
-    vim.fn.mkdir(graph.pages_dir(st.root), "p")
-    local f, err = io.open(path, "w")
-    if not f then
-      error("logsvim: failed to write " .. path .. ": " .. tostring(err))
+  if not st.pseudo then
+    local content_end
+    if st.mark then
+      content_end = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, st.mark, {})[1]
+    else
+      content_end = vim.api.nvim_buf_line_count(bufnr)
     end
-    if #content > 0 then
-      f:write(table.concat(content, "\n") .. "\n")
+
+    local content = {}
+    if content_end > CONTENT_START then
+      content = vim.api.nvim_buf_get_lines(bufnr, CONTENT_START, content_end, false)
     end
-    f:close()
+
+    local path = graph.pages_dir(st.root) .. "/" .. st.name .. ".md"
+    if #content > 0 or vim.fn.filereadable(path) == 1 then
+      vim.fn.mkdir(graph.pages_dir(st.root), "p")
+      local f, err = io.open(path, "w")
+      if not f then
+        error("logsvim: failed to write " .. path .. ": " .. tostring(err))
+      end
+      if #content > 0 then
+        f:write(table.concat(content, "\n") .. "\n")
+      end
+      f:close()
+    end
   end
 
-  local lines, new_content_end = M.render(st.root, st.name)
+  local lines, new_content_end, heading_kind = M.render(st.root, st.name)
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modified = false
+  st.heading_kind = heading_kind
   set_mark(bufnr, st, lines, new_content_end)
 
-  -- Reindex [[Page]] links in the background so a newly-created page (or new
-  -- links within it) show up in completion without a manual :LogsvimReindex.
-  index.refresh(st.root)
+  if not st.pseudo then
+    -- Reindex [[Page]] links in the background so a newly-created page (or
+    -- new links within it) show up in completion without a manual
+    -- :LogsvimReindex.
+    index.refresh(st.root)
+  end
 end
 
--- Find the nearest "### <date>" heading at or above the cursor and jump to
--- that date in the journal (exact block navigation isn't supported, but
--- landing on the right day gets you close).
+-- Find the nearest "### <name>" heading at or above the cursor and jump to
+-- it: a journal date for a normal page's linked references (or a
+-- journal-sourced pseudo-page group), or another page for a page-sourced
+-- pseudo-page group (see state[bufnr].heading_kind). Exact block navigation
+-- isn't supported, but landing on the right day/page gets you close.
 function M.goto_reference(bufnr)
   local root = scheme_parts(vim.api.nvim_buf_get_name(bufnr))
+  local st = state[bufnr]
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, lnum, false)
   for i = #lines, 1, -1 do
     local date = lines[i]:match("^### (.+)$")
     if date then
-      journal.goto_date(root, date)
+      if st and st.heading_kind and st.heading_kind[date] == "page" then
+        M.open(date)
+      else
+        journal.goto_date(root, date)
+      end
       return
     end
   end
@@ -360,6 +400,11 @@ end
 -- across journals/pages, the page file itself (if any), and any open
 -- buffers that would otherwise show stale text.
 function M.rename(root, old_name, new_name)
+  if PSEUDO_PAGES[old_name] then
+    vim.notify("logsvim: [[" .. old_name .. "]] is a built-in page and can't be renamed", vim.log.levels.WARN)
+    return
+  end
+
   local updated, err = graph.rename_page(root, old_name, new_name)
   if not updated then
     vim.notify(err, vim.log.levels.ERROR)
