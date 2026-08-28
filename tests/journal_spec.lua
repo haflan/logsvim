@@ -139,6 +139,103 @@ describe(":LogsvimJournal buffer", function()
     close_journal_buf(bufnr)
   end)
 
+  it("preserves an untouched day's surviving lines when a delete spans into its header/boundary", function()
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    local function find_row(text)
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      for i, l in ipairs(lines) do
+        if l == text then
+          return i - 1 -- 0-indexed
+        end
+      end
+      return nil
+    end
+
+    local unrelated_before = helpers.read_file(root .. "/journals/2026_07_30.md")
+
+    -- Delete from the last line of 2026_08_01's content through the middle
+    -- of 2026_07_31's content. This spans the blank separator and the
+    -- "# 2026_07_31" header itself, which used to corrupt boundary tracking
+    -- for the day above (2026_08_01) even though its earlier lines were
+    -- never touched.
+    local screenshot_row = find_row("  - ![screenshot.png](../assets/screenshot.png)")
+    local quickadd_row = find_row("  - logsvim: journal quick-add")
+    assert.truthy(screenshot_row)
+    assert.truthy(quickadd_row)
+
+    vim.api.nvim_buf_set_lines(bufnr, screenshot_row, quickadd_row + 1, false, {})
+    vim.cmd("write")
+
+    local edited_2026_08_01 = helpers.read_file(root .. "/journals/2026_08_01.md")
+    assert.are.equal("- [[Neovim]]\n  - Wired up logsvim.nvim\n", edited_2026_08_01)
+
+    local edited_2026_07_31 = helpers.read_file(root .. "/journals/2026_07_31.md")
+    assert.are.equal("  - logsvim: page backlinks\n", edited_2026_07_31)
+
+    local unrelated_after = helpers.read_file(root .. "/journals/2026_07_30.md")
+    assert.are.equal(unrelated_before, unrelated_after)
+
+    close_journal_buf(bufnr)
+  end)
+
+  it("keeps every day's boundary correct across three lazy-loaded batches", function()
+    config.setup({ root = root, journal_batch_size = 1 })
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local st = journal._test.state[bufnr]
+
+    -- journal.open() loads today's (empty) file as batch 1. Load the rest
+    -- one day at a time so every append_batch call has to snap back the
+    -- previous batch's open-ended boundary (see the prev_last_id handling
+    -- in append_batch) -- this exercises that chain across more than one
+    -- link, not just a single load-more.
+    while st.next_index <= #st.files do
+      journal._test.maybe_load_more(bufnr)
+    end
+    assert.are.equal(4, #st.files) -- today (empty) + the 3 fixture days
+
+    local function find_row(text)
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      for i, l in ipairs(lines) do
+        if l == text then
+          return i - 1 -- 0-indexed
+        end
+      end
+      return nil
+    end
+
+    -- Edit the very first (today, initially empty) and very last (oldest,
+    -- open-ended) day's regions -- the two ends of the chain -- while
+    -- leaving the two middle days untouched.
+    local today_header_row = find_row("# " .. graph.filename_display(graph.date_to_filename(os.time())))
+    assert.truthy(today_header_row)
+    vim.api.nvim_buf_set_lines(bufnr, today_header_row + 1, today_header_row + 1, false, { "- [[Quick add]]" })
+
+    local unrelated_1 = helpers.read_file(root .. "/journals/2026_08_01.md")
+    local unrelated_2 = helpers.read_file(root .. "/journals/2026_07_31.md")
+
+    local last_line = vim.api.nvim_buf_line_count(bufnr)
+    vim.api.nvim_buf_set_lines(bufnr, last_line, last_line, false, { "  - appended at the very end" })
+
+    vim.cmd("write")
+
+    local edited_today = helpers.read_file(root .. "/journals/" .. graph.date_to_filename(os.time()))
+    assert.are.equal("- [[Quick add]]\n", edited_today)
+
+    local edited_last = helpers.read_file(root .. "/journals/2026_07_30.md")
+    assert.are.equal(
+      "- [[Groceries]]\n  - Bought milk and eggs\n- [[Neovim]]\n  - Started reading the [[Plugin Ideas]] notes\n  - appended at the very end\n",
+      edited_last
+    )
+
+    assert.are.equal(unrelated_1, helpers.read_file(root .. "/journals/2026_08_01.md"))
+    assert.are.equal(unrelated_2, helpers.read_file(root .. "/journals/2026_07_31.md"))
+
+    close_journal_buf(bufnr)
+  end)
+
   it("lazy-loads the next batch once the visible buffer is exhausted", function()
     config.setup({ root = root, journal_batch_size = 1 })
     journal.open(root)

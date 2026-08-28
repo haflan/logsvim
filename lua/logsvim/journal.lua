@@ -49,8 +49,12 @@ end
 
 -- Render up to `count` files starting at st.next_index into `bufnr`,
 -- appending after the current last line (or replacing the initial empty
--- buffer on first load). Each day gets a "# <date>" header line that its
--- extmark anchors to; content starts on the line below the header.
+-- buffer on first load). Each day gets a "# <date>" header line, and its
+-- content (the lines below the header, up to the next day's blank
+-- separator or the end of buffer) is tracked by a *range* extmark so that
+-- M.write() can read each day's boundaries directly off its own mark
+-- instead of inferring them from a neighboring mark's position — see the
+-- prev_last_id handling below for why that distinction matters.
 local function append_batch(bufnr, st, count)
   if st.next_index > #st.files then
     return false
@@ -58,9 +62,10 @@ local function append_batch(bufnr, st, count)
 
   local first_batch = st.next_index == 1
   local start_row = first_batch and 0 or vim.api.nvim_buf_line_count(bufnr)
+  local prev_last_id = st.last_mark_id
 
   local lines = {}
-  local new_marks = {}
+  local day_spans = {}
   local have_content = not first_batch
 
   for i = st.next_index, math.min(st.next_index + count - 1, #st.files) do
@@ -72,12 +77,18 @@ local function append_batch(bufnr, st, count)
       table.insert(lines, "")
     end
     table.insert(lines, "# " .. graph.filename_display(filename))
-    local header_offset = #lines - 1 -- 0-indexed row of header within `lines`
+    local content_start_offset = #lines -- 0-indexed row of first content line within `lines`
     for _, l in ipairs(content) do
       table.insert(lines, l)
     end
+    local content_end_offset = #lines -- exclusive; row after the last content line
 
-    table.insert(new_marks, { offset = header_offset, path = path, original_lines = content })
+    table.insert(day_spans, {
+      content_start_offset = content_start_offset,
+      content_end_offset = content_end_offset,
+      path = path,
+      original_lines = content,
+    })
     have_content = true
   end
 
@@ -87,9 +98,40 @@ local function append_batch(bufnr, st, count)
     vim.api.nvim_buf_set_lines(bufnr, start_row, start_row, false, lines)
   end
 
-  for _, m in ipairs(new_marks) do
-    local id = vim.api.nvim_buf_set_extmark(bufnr, ns, start_row + m.offset, 0, {})
-    st.extmarks[id] = { path = m.path, original_lines = m.original_lines }
+  local last_id = nil
+  for _, span in ipairs(day_spans) do
+    local id = vim.api.nvim_buf_set_extmark(bufnr, ns, start_row + span.content_start_offset, 0, {
+      end_row = start_row + span.content_end_offset,
+      end_col = 0,
+      right_gravity = false,
+      -- So a bullet typed at the end of a day's content (right before the
+      -- blank separator) is picked up as part of that day, not lost outside
+      -- the tracked region.
+      end_right_gravity = true,
+    })
+    st.extmarks[id] = { path = span.path, original_lines = span.original_lines }
+    last_id = id
+  end
+
+  -- The lines we just inserted landed exactly at the previous last day's
+  -- content-end boundary. Because that mark's end has end_right_gravity =
+  -- true (needed for the reason above), Neovim would otherwise treat this
+  -- batch's new content as an append *into* that day's region and extend
+  -- its end to swallow it. Snap it back to the boundary that existed before
+  -- this insert.
+  if prev_last_id and st.extmarks[prev_last_id] then
+    local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, prev_last_id, {})
+    vim.api.nvim_buf_set_extmark(bufnr, ns, pos[1], 0, {
+      id = prev_last_id,
+      end_row = start_row,
+      end_col = 0,
+      right_gravity = false,
+      end_right_gravity = true,
+    })
+  end
+
+  if last_id then
+    st.last_mark_id = last_id
   end
 
   st.next_index = st.next_index + count
@@ -103,7 +145,7 @@ function M.read(bufnr)
     return
   end
 
-  local st = { root = root, files = list_journal_files(root), next_index = 1, extmarks = {}, loading = false }
+  local st = { root = root, files = list_journal_files(root), next_index = 1, extmarks = {}, loading = false, last_mark_id = nil }
   state[bufnr] = st
 
   vim.bo[bufnr].buftype = "acwrite"
@@ -161,22 +203,18 @@ function M.write(bufnr)
     return
   end
 
-  local marks = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, {})
-  table.sort(marks, function(a, b)
-    return a[2] < b[2]
-  end)
-
-  local last_line = vim.api.nvim_buf_line_count(bufnr)
+  -- Each mark carries its own content range (see append_batch), so regions
+  -- are read independently rather than derived from a neighboring mark's
+  -- position — an edit that mangles one day's boundary must not corrupt
+  -- another, untouched day's write.
+  local marks = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
   local changed = false
 
-  for idx, mark in ipairs(marks) do
-    local id, header_row = mark[1], mark[2]
+  for _, mark in ipairs(marks) do
+    local id, content_start, details = mark[1], mark[2], mark[4]
     local region = st.extmarks[id]
     if region then
-      local content_start = header_row + 1
-      -- next region's header row minus the blank separator line before it;
-      -- for the last region, content runs to the end of the buffer.
-      local content_end = idx < #marks and (marks[idx + 1][2] - 1) or last_line
+      local content_end = details.end_row or content_start
 
       local current = {}
       if content_end > content_start then
