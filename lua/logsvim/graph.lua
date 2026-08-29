@@ -216,6 +216,16 @@ function M.list_md_files(dir)
   return files
 end
 
+-- Every journal filename for `root`, newest-first. "YYYY_MM_DD.md" sorts
+-- chronologically as a plain string, so descending string order works.
+function M.list_journal_files(root)
+  local files = M.list_md_files(M.journal_dir(root))
+  table.sort(files, function(a, b)
+    return a > b
+  end)
+  return files
+end
+
 -- Rewrite every "[[old_name]]" occurrence on `line` to "[[new_name]]",
 -- leaving other links untouched. Uses a match callback rather than a
 -- pattern-string replacement so neither name needs Lua-pattern escaping.
@@ -244,7 +254,7 @@ function M.rename_page(root, old_name, new_name)
 
   local old_path = M.pages_dir(root) .. "/" .. old_name .. ".md"
   local new_path = M.pages_dir(root) .. "/" .. new_name .. ".md"
-  if vim.fn.filereadable(old_path) == 1 and vim.fn.filereadable(new_path) == 1 then
+  if vim.fn.filereadable(new_path) == 1 then
     return nil, "logsvim: a page named " .. new_name .. " already exists"
   end
 

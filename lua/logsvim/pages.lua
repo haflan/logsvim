@@ -61,14 +61,12 @@ local function line_references(line, name)
   return false
 end
 
-local function list_journal_files(root)
-  local files = graph.list_md_files(graph.journal_dir(root))
-  -- "YYYY_MM_DD.md" sorts chronologically as a plain string, so descending
-  -- string order is newest-first.
-  table.sort(files, function(a, b)
-    return a > b
-  end)
-  return files
+-- Whether `line` is itself a bullet's own marker line (leading "- ", as
+-- opposed to a continuation line wrapped under one -- see
+-- graph.build_journal_block, which never gives a continuation line its own
+-- "- " marker).
+local function is_bullet_line(line)
+  return line:match("^[ \t]*%-") ~= nil
 end
 
 -- Journal blocks that reference "[[name]]", grouped by date, newest first,
@@ -77,12 +75,17 @@ end
 -- { { date = "2026_08_01", lines = {...outline...} }, ... }
 function M.find_references(root, name)
   local groups = {}
-  for _, filename in ipairs(list_journal_files(root)) do
+  for _, filename in ipairs(graph.list_journal_files(root)) do
     local lines = graph.read_lines(graph.journal_dir(root) .. "/" .. filename)
     local headers = {}
     for i, line in ipairs(lines) do
       if line_references(line, name) then
-        table.insert(headers, i)
+        -- A match on the bullet's own marker line is itself a valid header
+        -- -- outline.group() will add its ancestor context automatically.
+        -- A match on a continuation line (no marker of its own) has to be
+        -- resolved up to the bullet it belongs to first, or it gets treated
+        -- as a detached header with no marker (see outline.header_for()).
+        table.insert(headers, is_bullet_line(line) and i or outline.header_for(lines, i))
       end
     end
     if #headers > 0 then
@@ -259,20 +262,32 @@ function M.write(bufnr)
   end
 end
 
--- Find the nearest "### <name>" heading at or above the cursor and jump to
--- it: a journal date for a normal page's linked references (or a
--- journal-sourced pseudo-page group), or another page for a page-sourced
--- pseudo-page group (see state[bufnr].heading_kind). Exact block navigation
--- isn't supported, but landing on the right day/page gets you close.
+-- Find the nearest "### <name>" heading at or above the cursor -- but only
+-- within the read-only aggregation section (below st.mark; see set_mark) --
+-- and jump to it: a journal date for a normal page's linked references (or
+-- a journal-sourced pseudo-page group), or another page for a page-sourced
+-- pseudo-page group (see state[bufnr].heading_kind). Restricting the scan
+-- to below the boundary keeps a "### " heading the user wrote as ordinary
+-- editable page content from being misread as a reference to jump to.
+-- Exact block navigation isn't supported, but landing on the right day/page
+-- gets you close.
 function M.goto_reference(bufnr)
   local root = scheme_parts(vim.api.nvim_buf_get_name(bufnr))
   local st = state[bufnr]
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, lnum, false)
-  for i = #lines, 1, -1 do
-    local date = lines[i]:match("^### (.+)$")
+
+  local boundary_row = st and st.mark and vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, st.mark, {})[1]
+  if not boundary_row or lnum <= boundary_row then
+    vim.notify("logsvim: no referencing date found above the cursor", vim.log.levels.WARN)
+    return
+  end
+
+  local section = vim.api.nvim_buf_get_lines(bufnr, boundary_row, lnum, false)
+  for i = #section, 1, -1 do
+    local date = section[i]:match("^### (.+)$")
     if date then
-      if st and st.heading_kind and st.heading_kind[i] == "page" then
+      local buf_lnum = boundary_row + i
+      if st.heading_kind and st.heading_kind[buf_lnum] == "page" then
         M.open(date)
       else
         journal.goto_date(root, date)
@@ -288,12 +303,15 @@ end
 -- task-marker status), followed by every known real page name. An empty
 -- pseudo-page is left off the list -- opening it would show nothing -- and
 -- a real name that happens to collide with a pseudo-page name is skipped
--- since the pseudo-page entry already covers it.
+-- since the pseudo-page entry already covers it. Which pseudo-pages have
+-- something to show is checked via schedule.presence(), a single pass over
+-- the graph, rather than rendering each of the 10 pseudo-pages in full.
 function M.completion_names(root)
   local names, seen = {}, {}
+  local present = schedule.presence(root)
 
   for _, name in ipairs(PSEUDO_PAGE_NAMES) do
-    if #PSEUDO_PAGES[name](root) > 0 then
+    if present[name] then
       table.insert(names, name)
       seen[name] = true
     end

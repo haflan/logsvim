@@ -252,6 +252,42 @@ describe("schedule.by_marker", function()
   end)
 end)
 
+describe("schedule.presence", function()
+  local root
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root })
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  it("agrees with schedule.due/by_marker about which pseudo-pages have something to show", function()
+    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2026-08-01 Sat>\n- LATER Someday\n")
+
+    local present = schedule.presence(root, NOW)
+    assert.is_true(present.Scheduled)
+    assert.is_true(present.TODO)
+    assert.is_true(present.LATER)
+    assert.is_falsy(present.DOING)
+    assert.is_falsy(present.DONE)
+  end)
+
+  it("excludes Scheduled when the only SCHEDULED block is done or not yet due", function()
+    write_file(root .. "/pages/Project.md", "- DONE Ship v2\n  SCHEDULED: <2026-08-01 Sat>\n")
+    assert.is_falsy(schedule.presence(root, NOW).Scheduled)
+
+    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2026-08-10 Mon>\n")
+    assert.is_falsy(schedule.presence(root, NOW).Scheduled)
+  end)
+
+  it("returns an empty table for a graph with no scheduled or marked blocks", function()
+    assert.are.same({}, schedule.presence(root, NOW))
+  end)
+end)
+
 describe("schedule.MARKERS", function()
   it("lists every Logseq task marker exactly once", function()
     local seen = {}

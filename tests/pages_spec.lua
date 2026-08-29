@@ -65,6 +65,21 @@ describe("pages.find_references", function()
   it("returns no groups for a page with no references", function()
     assert.are.same({}, pages.find_references(root, "NoSuchPage"))
   end)
+
+  it("resolves a reference on a continuation line to its owning bullet instead of a detached header", function()
+    local block = graph.build_journal_block("Notes", "intro line\nmentions [[TestPage]] here")
+    local f = io.open(root .. "/journals/2026_07_29.md", "w")
+    f:write(table.concat(block, "\n") .. "\n")
+    f:close()
+
+    local groups = pages.find_references(root, "TestPage")
+    assert.are.equal(1, #groups)
+    assert.are.equal("2026_07_29", groups[1].date)
+    -- Unchanged from the source: the continuation line stays merged under
+    -- its bullet's "- " marker, not rendered as its own detached, dash-less
+    -- child one level deeper.
+    assert.are.same(block, groups[1].lines)
+  end)
 end)
 
 describe("pages.render", function()
@@ -345,6 +360,39 @@ describe("pages.open buffer", function()
 
     close_buf(page_buf)
     close_buf(journal_buf)
+  end)
+
+  it("warns instead of misreading a user-authored \"### \" heading in the page's own editable content", function()
+    local f = io.open(root .. "/pages/Neovim.md", "a")
+    f:write("\n### My Section\nsome notes\n")
+    f:close()
+
+    pages.open("Neovim")
+    local page_buf = vim.api.nvim_get_current_buf()
+
+    local lnum
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(page_buf, 0, -1, false)) do
+      if l == "some notes" then
+        lnum = i
+        break
+      end
+    end
+    assert.truthy(lnum)
+    vim.api.nvim_win_set_cursor(0, { lnum, 0 })
+
+    local message
+    local original_notify = vim.notify
+    vim.notify = function(msg)
+      message = msg
+    end
+
+    pages.goto_reference(page_buf)
+
+    vim.notify = original_notify
+    assert.truthy(message and message:find("no referencing date found", 1, true))
+    assert.are.equal(page_buf, vim.api.nvim_get_current_buf())
+
+    close_buf(page_buf)
   end)
 end)
 

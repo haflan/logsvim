@@ -132,6 +132,40 @@ function M.scan(root)
   return items
 end
 
+-- Which pseudo-pages currently have something to show: { Scheduled = bool,
+-- [marker] = bool, ... }. Used by pages.completion_names() to decide which
+-- pseudo-pages to list -- computed with a single pass over the graph rather
+-- than calling M.due()/M.by_marker() once per pseudo-page (10 full scans).
+function M.presence(root, now)
+  local t = os.date("*t", now or os.time())
+  local cutoff = os.time({ year = t.year, month = t.month, day = t.day, hour = 12 })
+
+  local present = {}
+  local remaining_markers = {}
+  for _, status in ipairs(M.MARKERS) do
+    remaining_markers[status] = true
+  end
+
+  each_file(root, function(_, _, _, lines)
+    for i, line in ipairs(lines) do
+      local m = marker(line)
+      if m and remaining_markers[m] then
+        present[m] = true
+        remaining_markers[m] = nil
+      end
+
+      if not present.Scheduled then
+        local date_t = marker_date(line)
+        if date_t and date_t <= cutoff and not is_done(lines[outline.header_for(lines, i)]) then
+          present.Scheduled = true
+        end
+      end
+    end
+  end)
+
+  return present
+end
+
 -- Every not-yet-done SCHEDULED/DEADLINE block whose date is on or before
 -- `now` (defaults to the real current time), for the "Scheduled" pseudo-
 -- page: grouped by source file and re-indented relative to its ancestor

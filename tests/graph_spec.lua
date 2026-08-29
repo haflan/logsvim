@@ -149,6 +149,18 @@ describe("graph.rename_page", function()
     assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim.md"))
   end)
 
+  it("errors instead of merging a link-only page into an existing page with the new name", function()
+    -- "Plugin Ideas" (per the fixture) has references but no pages/Plugin
+    -- Ideas.md of its own; renaming it onto "Neovim", which does have a
+    -- file, must still be treated as a collision even though the *old*
+    -- name's own file check trivially passes (there's nothing to clobber
+    -- on disk, but the two pages' references would otherwise be merged).
+    local updated, err = graph.rename_page(root, "Plugin Ideas", "Neovim")
+    assert.is_nil(updated)
+    assert.truthy(err)
+    assert.truthy(helpers.read_file(root .. "/journals/2026_07_31.md"):find("[[Plugin Ideas]]", 1, true))
+  end)
+
   it("errors on an empty or unchanged new name", function()
     local updated, err = graph.rename_page(root, "Neovim", "")
     assert.is_nil(updated)

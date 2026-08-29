@@ -15,38 +15,6 @@ local function scheme_root(bufname)
   return bufname:match("^logsvim%-journal://(.*)$")
 end
 
-local function list_journal_files(root)
-  local dir = graph.journal_dir(root)
-  local files = {}
-  local ok, entries = pcall(vim.fn.readdir, dir)
-  if ok and entries then
-    for _, name in ipairs(entries) do
-      if name:match("%.md$") then
-        table.insert(files, name)
-      end
-    end
-  end
-  -- "YYYY_MM_DD.md" sorts chronologically as a plain string, so descending
-  -- string order is newest-first.
-  table.sort(files, function(a, b)
-    return a > b
-  end)
-  return files
-end
-
-local function read_file_lines(path)
-  local f = io.open(path, "r")
-  if not f then
-    return {}
-  end
-  local lines = {}
-  for line in f:lines() do
-    table.insert(lines, line)
-  end
-  f:close()
-  return lines
-end
-
 -- Render up to `count` files starting at st.next_index into `bufnr`,
 -- appending after the current last line (or replacing the initial empty
 -- buffer on first load). Each day gets a "# <date>" header line, and its
@@ -71,7 +39,7 @@ local function append_batch(bufnr, st, count)
   for i = st.next_index, math.min(st.next_index + count - 1, #st.files) do
     local filename = st.files[i]
     local path = graph.journal_dir(st.root) .. "/" .. filename
-    local content = read_file_lines(path)
+    local content = graph.read_lines(path)
 
     if have_content then
       table.insert(lines, "")
@@ -145,7 +113,7 @@ function M.read(bufnr)
     return
   end
 
-  local st = { root = root, files = list_journal_files(root), next_index = 1, extmarks = {}, loading = false, last_mark_id = nil }
+  local st = { root = root, files = graph.list_journal_files(root), next_index = 1, extmarks = {}, loading = false, last_mark_id = nil }
   state[bufnr] = st
 
   vim.bo[bufnr].buftype = "acwrite"

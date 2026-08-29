@@ -24,7 +24,7 @@ end
 
 -- Wire up bullet-continuation editing and [[ ]] completion for `bufnr`.
 -- Safe to call more than once per buffer.
-function M.attach(bufnr)
+function M.attach(bufnr, root)
   if vim.b[bufnr].logsvim_attached then
     return
   end
@@ -32,13 +32,12 @@ function M.attach(bufnr)
 
   edit.attach(bufnr)
   attach_cmp(bufnr)
-  index.ensure_loaded(graph.root())
+  index.ensure_loaded(root or graph.root())
 end
 
 -- Whether `path` (a real file, not the logsvim-journal:// virtual buffer)
--- lives inside the graph's journal_dir or pages_dir.
+-- lives inside `root`'s journal_dir or pages_dir.
 function M.is_graph_path(path, root)
-  root = root or graph.root()
   local full = vim.fn.fnamemodify(path, ":p")
   local jd = vim.fn.fnamemodify(graph.journal_dir(root), ":p")
   local pd = vim.fn.fnamemodify(graph.pages_dir(root), ":p")
@@ -47,7 +46,10 @@ end
 
 -- Auto-attach to real journal/page files (e.g. opened via :LogsvimPage's
 -- quickfix list, or `gd`) that aren't routed through the journal.lua virtual
--- buffer and so wouldn't otherwise pick up bullet-editing/completion.
+-- buffer and so wouldn't otherwise pick up bullet-editing/completion. Goes
+-- through graph.resolve_root() rather than the raw (possibly still
+-- unresolved) graph.root(), so this also works the first time a graph file
+-- is opened directly, before any :Logsvim* command has run.
 function M.setup_autocmds()
   local group = vim.api.nvim_create_augroup("logsvim_buffer", { clear = true })
   vim.api.nvim_create_autocmd("BufEnter", {
@@ -55,9 +57,14 @@ function M.setup_autocmds()
     pattern = "*.md",
     callback = function(args)
       local path = vim.api.nvim_buf_get_name(args.buf)
-      if path ~= "" and M.is_graph_path(path) then
-        M.attach(args.buf)
+      if path == "" then
+        return
       end
+      graph.resolve_root(function(root)
+        if root and vim.api.nvim_buf_is_valid(args.buf) and M.is_graph_path(path, root) then
+          M.attach(args.buf, root)
+        end
+      end)
     end,
   })
 end
