@@ -61,14 +61,6 @@ local function line_references(line, name)
   return false
 end
 
--- Whether `line` is itself a bullet's own marker line (leading "- ", as
--- opposed to a continuation line wrapped under one -- see
--- graph.build_journal_block, which never gives a continuation line its own
--- "- " marker).
-local function is_bullet_line(line)
-  return line:match("^[ \t]*%-") ~= nil
-end
-
 -- Journal blocks that reference "[[name]]", grouped by date, newest first,
 -- with each match's ancestor context included and same-context matches
 -- merged together (see outline.lua):
@@ -85,7 +77,7 @@ function M.find_references(root, name)
         -- A match on a continuation line (no marker of its own) has to be
         -- resolved up to the bullet it belongs to first, or it gets treated
         -- as a detached header with no marker (see outline.header_for()).
-        table.insert(headers, is_bullet_line(line) and i or outline.header_for(lines, i))
+        table.insert(headers, graph.is_bullet_line(line) and i or outline.header_for(lines, i))
       end
     end
     if #headers > 0 then

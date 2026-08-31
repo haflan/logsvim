@@ -36,10 +36,10 @@ local DONE_MARKERS = { DONE = true, CANCELED = true, CANCELLED = true }
 -- misread as the DONE marker -- Lua's %f frontier alone would backtrack
 -- across the trailing hyphen and accept just that.
 local function marker(header_line)
-  local content = header_line:match("^[ \t]*%-%s*(.*)$")
-  if not content then
+  if not graph.is_bullet_line(header_line) then
     return nil
   end
+  local content = header_line:match("^[ \t]*%-%s*(.*)$")
   local word, rest = content:match("^(%u[%u%-]*)(.*)$")
   if word and (rest == "" or rest:match("^%s")) then
     return word

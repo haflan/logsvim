@@ -49,7 +49,10 @@ end
 -- buffer and so wouldn't otherwise pick up bullet-editing/completion. Goes
 -- through graph.resolve_root() rather than the raw (possibly still
 -- unresolved) graph.root(), so this also works the first time a graph file
--- is opened directly, before any :Logsvim* command has run.
+-- is opened directly, before any :Logsvim* command has run. Resolves
+-- silently since this fires on every *.md buffer, including ones outside
+-- any graph -- an explicit :Logsvim* command is still the one that notifies
+-- or prompts on failure.
 function M.setup_autocmds()
   local group = vim.api.nvim_create_augroup("logsvim_buffer", { clear = true })
   vim.api.nvim_create_autocmd("BufEnter", {
@@ -64,7 +67,7 @@ function M.setup_autocmds()
         if root and vim.api.nvim_buf_is_valid(args.buf) and M.is_graph_path(path, root) then
           M.attach(args.buf, root)
         end
-      end)
+      end, { silent = true })
     end,
   })
 end

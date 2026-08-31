@@ -35,4 +35,32 @@ describe("buffer auto-attach", function()
     vim.bo[bufnr].modified = false
     pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
   end)
+
+  it("doesn't notify when a markdown file outside any graph is opened", function()
+    -- The BufEnter autocmd fires for every *.md buffer, including ones with
+    -- no graph behind them at all, so it must resolve silently rather than
+    -- nagging the user with resolve_root's usual "no graphs found" error.
+    local empty = vim.fn.tempname()
+    vim.fn.mkdir(empty, "p")
+    vim.fn.chdir(empty)
+
+    local notified = false
+    local original_notify = vim.notify
+    vim.notify = function()
+      notified = true
+    end
+
+    local path = empty .. "/notes.md"
+    vim.fn.writefile({}, path)
+    vim.cmd("noswapfile edit " .. vim.fn.fnameescape(path))
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    vim.notify = original_notify
+    assert.is_false(notified)
+    assert.is_falsy(vim.b[bufnr].logsvim_attached)
+
+    vim.bo[bufnr].modified = false
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+    helpers.rmtree(empty)
+  end)
 end)

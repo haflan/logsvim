@@ -20,10 +20,19 @@ local resolved_root
 
 -- Find the graph root to use, calling `callback(root)` once resolved (nil if
 -- none could be found). Tries, in order: an explicit setup({ root = ... }),
--- $LOGSVIM_ROOT, the cwd, the cwd's parent, and finally the set of graphs
--- with a cached index (letting the user pick if there's more than one).
--- Notifies an error if nothing works.
-function M.resolve_root(callback)
+-- $LOGSVIM_ROOT, the cwd, and the cwd's parent -- deterministic checks that
+-- say something about *this* location. If none of those apply and
+-- `opts.silent` is set, gives up right there with callback(nil): it does
+-- NOT fall back to the set of other, unrelated graphs with a cached index,
+-- since for an opportunistic caller like buffer.lua's BufEnter autocmd
+-- (which probes on every markdown buffer, including ones with no graph
+-- behind them at all) that fallback would silently and permanently pin the
+-- session to whichever graph happens to be cached, based on nothing more
+-- than an incidental file open. A non-silent call still falls back to the
+-- cached candidates (letting the user pick if there's more than one) and
+-- notifies an error if nothing works.
+function M.resolve_root(callback, opts)
+  opts = opts or {}
   if resolved_root then
     callback(resolved_root)
     return
@@ -54,6 +63,11 @@ function M.resolve_root(callback)
   local parent = vim.fn.fnamemodify(cwd, ":h")
   if parent ~= cwd and M.looks_like_root(parent) then
     use(parent)
+    return
+  end
+
+  if opts.silent then
+    callback(nil)
     return
   end
 
@@ -123,6 +137,14 @@ local SUB_INDENT = {
 
 function M.sub_indent_for(indentation)
   return SUB_INDENT[indentation] or "\t" -- tab is Logseq's default
+end
+
+-- Whether `line` is itself a bullet's own marker line (leading "-", after
+-- any indentation), as opposed to a continuation line wrapped under one --
+-- see build_journal_block, which never gives a continuation line its own
+-- "- " marker.
+function M.is_bullet_line(line)
+  return line:match("^[ \t]*%-") ~= nil
 end
 
 -- A line starting with "-" (after leading whitespace) would otherwise be
@@ -216,13 +238,15 @@ function M.list_md_files(dir)
   return files
 end
 
--- Every journal filename for `root`, newest-first. "YYYY_MM_DD.md" sorts
--- chronologically as a plain string, so descending string order works.
+-- Every journal filename for `root`, newest-first. list_md_files already
+-- sorts ascending ("YYYY_MM_DD.md" sorts chronologically as a plain
+-- string), so just reverse it rather than sorting again.
 function M.list_journal_files(root)
   local files = M.list_md_files(M.journal_dir(root))
-  table.sort(files, function(a, b)
-    return a > b
-  end)
+  local n = #files
+  for i = 1, math.floor(n / 2) do
+    files[i], files[n - i + 1] = files[n - i + 1], files[i]
+  end
   return files
 end
 
@@ -241,6 +265,31 @@ local function replace_links_in_line(line, old_name, new_name)
   return result, changed
 end
 
+-- Whether `name` is already a known page in `root`: either it has its own
+-- pages/<name>.md, or it's referenced via a "[[name]]" link somewhere in a
+-- journal or page file (a page with no file of its own still has an
+-- identity once something links to it). Scans files directly rather than
+-- going through index.lua's cache, which is populated asynchronously and
+-- can still be empty (or stale) at exactly the moment this needs an
+-- authoritative answer -- e.g. right after Neovim starts.
+local function page_exists(root, name)
+  if vim.fn.filereadable(M.pages_dir(root) .. "/" .. name .. ".md") == 1 then
+    return true
+  end
+  for _, dir in ipairs({ M.journal_dir(root), M.pages_dir(root) }) do
+    for _, fname in ipairs(M.list_md_files(dir)) do
+      for _, line in ipairs(M.read_lines(dir .. "/" .. fname)) do
+        for match in line:gmatch("%[%[([^%[%]]+)%]%]") do
+          if match == name then
+            return true
+          end
+        end
+      end
+    end
+  end
+  return false
+end
+
 -- Rename a page: rewrite every "[[old_name]]" reference to "[[new_name]]"
 -- across every journal and page file, then rename pages/<old_name>.md to
 -- pages/<new_name>.md if it exists (a page referenced only via [[links]],
@@ -252,11 +301,12 @@ function M.rename_page(root, old_name, new_name)
     return nil, "logsvim: invalid new page name"
   end
 
-  local old_path = M.pages_dir(root) .. "/" .. old_name .. ".md"
-  local new_path = M.pages_dir(root) .. "/" .. new_name .. ".md"
-  if vim.fn.filereadable(new_path) == 1 then
+  if page_exists(root, new_name) then
     return nil, "logsvim: a page named " .. new_name .. " already exists"
   end
+
+  local old_path = M.pages_dir(root) .. "/" .. old_name .. ".md"
+  local new_path = M.pages_dir(root) .. "/" .. new_name .. ".md"
 
   local updated = 0
   for _, dir in ipairs({ M.journal_dir(root), M.pages_dir(root) }) do

@@ -161,6 +161,18 @@ describe("graph.rename_page", function()
     assert.truthy(helpers.read_file(root .. "/journals/2026_07_31.md"):find("[[Plugin Ideas]]", 1, true))
   end)
 
+  it("errors instead of merging two link-only pages that collide on the new name", function()
+    -- Neither "Plugin Ideas" nor "Groceries" (per the fixture) has a
+    -- pages/*.md file of its own, so the file-existence check alone can't
+    -- catch this collision -- it must be caught by scanning for an existing
+    -- "[[Groceries]]" reference instead.
+    local updated, err = graph.rename_page(root, "Plugin Ideas", "Groceries")
+
+    assert.is_nil(updated)
+    assert.truthy(err)
+    assert.truthy(helpers.read_file(root .. "/journals/2026_07_31.md"):find("[[Plugin Ideas]]", 1, true))
+  end)
+
   it("errors on an empty or unchanged new name", function()
     local updated, err = graph.rename_page(root, "Neovim", "")
     assert.is_nil(updated)
@@ -315,6 +327,81 @@ describe("graph.resolve_root", function()
     assert.truthy(message:find("No graphs found", 1, true))
     assert.are.equal(vim.log.levels.ERROR, level)
     helpers.rmtree(empty)
+  end)
+
+  it("with opts.silent, calls back with nil instead of notifying when no graph can be found", function()
+    local empty = vim.fn.tempname()
+    vim.fn.mkdir(empty, "p")
+    vim.fn.chdir(empty)
+
+    local notified = false
+    local original_notify = vim.notify
+    vim.notify = function()
+      notified = true
+    end
+
+    local got, called = "sentinel", false
+    graph.resolve_root(function(r)
+      got, called = r, true
+    end, { silent = true })
+
+    vim.notify = original_notify
+    assert.is_true(called)
+    assert.is_nil(got)
+    assert.is_false(notified)
+    helpers.rmtree(empty)
+  end)
+
+  it("with opts.silent, does not silently pin the session to the sole cached graph when cwd doesn't match", function()
+    -- Regression case: unlike an explicit resolve, a silent probe (e.g. from
+    -- buffer.lua's BufEnter, firing on every markdown buffer) must not fall
+    -- back to a globally cached graph just because it's the only one known --
+    -- that file may have nothing to do with any graph at all, and auto-
+    -- picking here would permanently memoize the wrong root for the session.
+    local empty = vim.fn.tempname()
+    vim.fn.mkdir(empty, "p")
+    vim.fn.chdir(empty)
+
+    seed_cache(root)
+
+    local got, called = "sentinel", false
+    graph.resolve_root(function(r)
+      got, called = r, true
+    end, { silent = true })
+
+    assert.is_true(called)
+    assert.is_nil(got)
+    helpers.rmtree(empty)
+  end)
+
+  it("with opts.silent, calls back with nil instead of prompting when multiple cached graphs exist", function()
+    local empty = vim.fn.tempname()
+    vim.fn.mkdir(empty, "p")
+    vim.fn.chdir(empty)
+
+    local other = helpers.temp_graph()
+    seed_cache(root)
+    seed_cache(other)
+
+    local prompted = false
+    local original_select = vim.ui.select
+    vim.ui.select = function(_, _, on_choice)
+      prompted = true
+      on_choice(other)
+    end
+
+    local got, called = "sentinel", false
+    graph.resolve_root(function(r)
+      got, called = r, true
+    end, { silent = true })
+
+    vim.ui.select = original_select
+    assert.is_true(called)
+    assert.is_nil(got)
+    assert.is_false(prompted)
+
+    helpers.rmtree(empty)
+    helpers.rmtree(other)
   end)
 
   it("memoizes the resolved root, ignoring a later cwd change", function()

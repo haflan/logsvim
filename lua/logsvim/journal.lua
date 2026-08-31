@@ -134,7 +134,7 @@ function M.read(bufnr)
   config.set_keymap(bufnr, "rename", function()
     require("logsvim.pages").rename_under_cursor()
   end, "logsvim: rename page under cursor")
-  buffer.attach(bufnr)
+  buffer.attach(bufnr, root)
 end
 
 local function maybe_load_more(bufnr)
