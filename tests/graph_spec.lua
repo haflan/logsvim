@@ -420,3 +420,104 @@ describe("graph.resolve_root", function()
     helpers.rmtree(elsewhere)
   end)
 end)
+
+describe("graph.write_lines_atomic", function()
+  local root
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root })
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  local function tmp_leftovers(dir)
+    return vim.tbl_filter(function(name)
+      return vim.startswith(name, ".logsvim-tmp-")
+    end, vim.fn.readdir(dir))
+  end
+
+  it("replaces the file's content and leaves no temp files behind", function()
+    local path = root .. "/journals/2026_07_30.md"
+    graph.write_lines_atomic(path, { "- one", "- two" })
+    assert.are.equal("- one\n- two\n", helpers.read_file(path))
+    assert.are.same({}, tmp_leftovers(root .. "/journals"))
+  end)
+
+  it("writes an empty list as an empty file", function()
+    local path = root .. "/journals/2026_07_30.md"
+    graph.write_lines_atomic(path, {})
+    assert.are.equal("", helpers.read_file(path))
+  end)
+
+  it("keeps the existing file's mode", function()
+    local path = root .. "/journals/2026_07_30.md"
+    vim.fn.setfperm(path, "rw-------")
+    graph.write_lines_atomic(path, { "- changed" })
+    assert.are.equal("rw-------", vim.fn.getfperm(path))
+  end)
+
+  it("creates the file and its parent dir when absent", function()
+    local path = root .. "/pages/sub/New.md"
+    graph.write_lines_atomic(path, { "hello" })
+    assert.are.equal("hello\n", helpers.read_file(path))
+  end)
+end)
+
+describe("graph.write_lines_checked", function()
+  local root, path
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root })
+    path = root .. "/journals/2026_07_30.md"
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  it("writes when the file still holds the expected lines", function()
+    local expected = graph.read_lines(path)
+    assert.is_true(graph.write_lines_checked(path, expected, { "- new" }))
+    assert.are.equal("- new\n", helpers.read_file(path))
+  end)
+
+  it("refuses and returns the disk lines when the file changed", function()
+    local before = helpers.read_file(path)
+    local ok, current = graph.write_lines_checked(path, { "- stale" }, { "- new" })
+    assert.is_false(ok)
+    assert.are.same(graph.read_lines(path), current)
+    assert.are.equal(before, helpers.read_file(path))
+  end)
+
+  it("treats a missing file as empty", function()
+    local missing = root .. "/journals/2099_01_01.md"
+    assert.is_true(graph.write_lines_checked(missing, {}, { "- created" }))
+    assert.are.equal("- created\n", helpers.read_file(missing))
+
+    local other = root .. "/journals/2099_01_02.md"
+    assert.is_false(graph.write_lines_checked(other, { "- something" }, { "- x" }))
+    assert.are.equal(0, vim.fn.filereadable(other))
+  end)
+end)
+
+describe("graph.merge_lines", function()
+  it("merges edits to different lines", function()
+    local base = { "a", "b", "c", "d", "e" }
+    local ours = { "A", "b", "c", "d", "e" }
+    local theirs = { "a", "b", "c", "d", "E" }
+    assert.are.same({ "A", "b", "c", "d", "E" }, graph.merge_lines(ours, base, theirs))
+  end)
+
+  it("returns nil on a conflict", function()
+    assert.is_nil(graph.merge_lines({ "ours" }, { "base" }, { "theirs" }))
+  end)
+
+  it("handles empty versions", function()
+    assert.are.same({}, graph.merge_lines({}, { "a" }, { "a" }))
+    assert.are.same({ "added" }, graph.merge_lines({}, {}, { "added" }))
+  end)
+end)

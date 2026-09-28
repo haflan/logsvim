@@ -396,6 +396,165 @@ describe("pages.open buffer", function()
   end)
 end)
 
+describe("pages.open buffer with concurrent changes on disk", function()
+  local root, path
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root })
+    path = root .. "/pages/Neovim.md"
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  local function write_file(p, content)
+    local f = assert(io.open(p, "w"))
+    f:write(content)
+    f:close()
+  end
+
+  local function capture_notify(fn)
+    local messages = {}
+    local original = vim.notify
+    vim.notify = function(msg)
+      table.insert(messages, msg)
+    end
+    local ok, err = pcall(fn)
+    vim.notify = original
+    assert(ok, err)
+    return messages
+  end
+
+  local function buf_text(bufnr)
+    return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+  end
+
+  it(":w with untouched page content keeps the disk version and re-renders it", function()
+    pages.open("Neovim")
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(path, "Edited in the browser.\n")
+    vim.cmd("write")
+
+    assert.are.equal("Edited in the browser.\n", helpers.read_file(path))
+    assert.are.same({ "# Neovim", "", "Edited in the browser." }, vim.api.nvim_buf_get_lines(bufnr, 0, 3, false))
+    assert.is_false(vim.bo[bufnr].modified)
+
+    close_buf(bufnr)
+  end)
+
+  it("merges an edit with a change to a different line made on disk", function()
+    write_file(path, "one\ntwo\nthree\n")
+    pages.open("Neovim")
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(path, "one\ntwo\nTHREE from the web\n")
+    vim.api.nvim_buf_set_lines(bufnr, 2, 3, false, { "ONE from nvim" })
+    vim.cmd("write")
+
+    assert.are.equal("ONE from nvim\ntwo\nTHREE from the web\n", helpers.read_file(path))
+    assert.are.same({ "# Neovim", "", "ONE from nvim", "two", "THREE from the web" }, vim.api.nvim_buf_get_lines(bufnr, 0, 5, false))
+    assert.is_false(vim.bo[bufnr].modified)
+
+    close_buf(bufnr)
+  end)
+
+  it("refuses a conflicting write, keeping the edits in the buffer, until :w!", function()
+    pages.open("Neovim")
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(path, "From the web.\n")
+    vim.api.nvim_buf_set_lines(bufnr, 2, 3, false, { "From nvim." })
+
+    local messages = capture_notify(function()
+      vim.cmd("write")
+    end)
+    assert.are.equal("From the web.\n", helpers.read_file(path))
+    assert.are.equal(1, #messages)
+    assert.truthy(messages[1]:find("pages/Neovim.md changed on disk", 1, true))
+    assert.is_true(vim.bo[bufnr].modified)
+    assert.are.equal("From nvim.", vim.api.nvim_buf_get_lines(bufnr, 2, 3, false)[1])
+
+    vim.cmd("write!")
+    assert.are.equal("From nvim.\n", helpers.read_file(path))
+    assert.is_false(vim.bo[bufnr].modified)
+
+    close_buf(bufnr)
+  end)
+
+  it("doesn't overwrite a page file created elsewhere after a brand-new page was opened", function()
+    pages.open("NoSuchPage")
+    local bufnr = vim.api.nvim_get_current_buf()
+    local new_path = root .. "/pages/NoSuchPage.md"
+
+    write_file(new_path, "Created in the browser.\n")
+    vim.api.nvim_buf_set_lines(bufnr, 2, 2, false, { "Created in nvim." })
+    capture_notify(function()
+      vim.cmd("write")
+    end)
+
+    assert.are.equal("Created in the browser.\n", helpers.read_file(new_path))
+    assert.is_true(vim.bo[bufnr].modified)
+
+    close_buf(bufnr)
+  end)
+
+  it(":LogsvimReload re-renders an unedited page, picking up new linked references too", function()
+    pages.open("Neovim")
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(path, "Reloaded content.\n")
+    local f = assert(io.open(root .. "/journals/2026_07_31.md", "a"))
+    f:write("- a new [[Neovim]] mention\n")
+    f:close()
+
+    vim.cmd("LogsvimReload")
+
+    local text = buf_text(bufnr)
+    assert.truthy(text:find("Reloaded content.", 1, true))
+    assert.truthy(text:find("a new [[Neovim]] mention", 1, true))
+    assert.is_false(vim.bo[bufnr].modified)
+
+    close_buf(bufnr)
+  end)
+
+  it(":LogsvimReload keeps an edited page and notifies; :LogsvimReload! discards the edits", function()
+    pages.open("Neovim")
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(path, "Changed on disk.\n")
+    vim.api.nvim_buf_set_lines(bufnr, 2, 3, false, { "My edit." })
+
+    local messages = capture_notify(function()
+      vim.cmd("LogsvimReload")
+    end)
+    assert.are.equal(1, #messages)
+    assert.are.equal("My edit.", vim.api.nvim_buf_get_lines(bufnr, 2, 3, false)[1])
+    assert.is_true(vim.bo[bufnr].modified)
+
+    vim.cmd("LogsvimReload!")
+    assert.are.equal("Changed on disk.", vim.api.nvim_buf_get_lines(bufnr, 2, 3, false)[1])
+    assert.is_false(vim.bo[bufnr].modified)
+
+    close_buf(bufnr)
+  end)
+
+  it("reloads when the page buffer is entered again", function()
+    pages.open("Neovim")
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    vim.cmd("enew")
+    write_file(path, "Changed while away.\n")
+    vim.cmd("buffer " .. bufnr)
+
+    assert.are.equal("Changed while away.", vim.api.nvim_buf_get_lines(bufnr, 2, 3, false)[1])
+
+    close_buf(bufnr)
+  end)
+end)
+
 describe("pages.open buffer for a pseudo-page", function()
   local root
 

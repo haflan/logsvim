@@ -31,6 +31,8 @@ describe("buffer auto-attach", function()
     local bufnr = vim.api.nvim_get_current_buf()
 
     assert.is_true(vim.b[bufnr].logsvim_attached)
+    -- So Neovim picks up changes made elsewhere (e.g. logsurf) on its own.
+    assert.is_true(vim.bo[bufnr].autoread)
 
     vim.bo[bufnr].modified = false
     pcall(vim.api.nvim_buf_delete, bufnr, { force = true })

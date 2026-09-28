@@ -1,6 +1,7 @@
 local config = require("logsvim.config")
 local graph = require("logsvim.graph")
 local journal = require("logsvim.journal")
+local buffer = require("logsvim.buffer")
 local index = require("logsvim.index")
 local outline = require("logsvim.outline")
 local schedule = require("logsvim.schedule")
@@ -15,7 +16,10 @@ local ns = vim.api.nvim_create_namespace("logsvim_pages")
 -- here on is the read-only aggregation.
 local CONTENT_START = 2
 
--- bufnr -> { root, name, mark, pseudo, heading_kind }. `mark` is an extmark
+-- bufnr -> { root, name, mark, pseudo, heading_kind, original_lines,
+-- notified }. `original_lines` is the page file's content as last rendered
+-- (see refresh()); `notified` the disk version M.reload() already warned
+-- about. `mark` is an extmark
 -- at the row (0-indexed) where the read-only aggregation section begins, or
 -- nil if the page currently has nothing to show there (in which case
 -- everything from CONTENT_START to the end of the buffer is page content).
@@ -176,6 +180,40 @@ local function set_mark(bufnr, st, lines, content_end)
   end
 end
 
+-- The editable page-content region's current buffer lines ({} for a
+-- pseudo-page, which has none).
+local function content_lines(bufnr, st)
+  if st.pseudo then
+    return {}
+  end
+  local content_end
+  if st.mark then
+    content_end = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, st.mark, {})[1]
+  else
+    content_end = vim.api.nvim_buf_line_count(bufnr)
+  end
+  if content_end <= CONTENT_START then
+    return {}
+  end
+  return vim.api.nvim_buf_get_lines(bufnr, CONTENT_START, content_end, false)
+end
+
+-- (Re-)render the whole buffer against the current graph state and mark it
+-- unmodified. `st.original_lines` records the page file's content as
+-- rendered: the version M.write() expects to still find on disk. Takes
+-- M.render()'s results if the caller already has them.
+local function refresh(bufnr, st, lines, content_end, heading_kind)
+  if not lines then
+    lines, content_end, heading_kind = M.render(st.root, st.name)
+  end
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  vim.bo[bufnr].modified = false
+  st.heading_kind = heading_kind
+  st.original_lines = vim.list_slice(lines, CONTENT_START + 1, content_end)
+  st.notified = nil
+  set_mark(bufnr, st, lines, content_end)
+end
+
 function M.read(bufnr)
   local root, name = scheme_parts(vim.api.nvim_buf_get_name(bufnr))
   if not root or not name then
@@ -187,70 +225,113 @@ function M.read(bufnr)
   vim.bo[bufnr].filetype = "markdown"
   vim.bo[bufnr].swapfile = false
 
-  local lines, content_end, heading_kind = M.render(root, name)
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-  vim.bo[bufnr].modified = false
-
-  local st = { root = root, name = name, mark = nil, pseudo = PSEUDO_PAGES[name] ~= nil, heading_kind = heading_kind }
+  local st = { root = root, name = name, mark = nil, pseudo = PSEUDO_PAGES[name] ~= nil }
   state[bufnr] = st
-  set_mark(bufnr, st, lines, content_end)
+  refresh(bufnr, st)
 
   config.set_keymap(bufnr, "goto_reference", M.goto_under_cursor, "logsvim: go to reference under cursor")
   config.set_keymap(bufnr, "rename", M.rename_under_cursor, "logsvim: rename page under cursor")
 end
 
+local function page_path(st)
+  return graph.pages_dir(st.root) .. "/" .. st.name .. ".md"
+end
+
 -- Write the editable page-content region (above the read-only boundary, if
 -- any) to pages/<name>.md, creating the file (and pages/ dir) if it doesn't
--- exist yet. The read-only section is never read from the buffer, and the
--- whole buffer is re-rendered afterwards, so any stray edits made there are
--- discarded rather than persisted. A pseudo-page (see PSEUDO_PAGES) has no
--- editable region at all -- writing one just re-renders it against the
--- current graph state, without touching pages/<name>.md or reindexing.
-function M.write(bufnr)
+-- exist yet -- but only if that region was actually edited, so a `:w` just
+-- to refresh the linked references never touches the file. Like the
+-- journal, the write only goes through if the file still holds what was
+-- rendered; a change made elsewhere in the meantime is three-way merged,
+-- and on a conflict nothing is written and the buffer keeps the user's
+-- edits. `opts.force` (`:w!`) overwrites regardless. The read-only section
+-- is never read from the buffer, and the whole buffer is re-rendered after
+-- a save, so any stray edits made there are discarded rather than
+-- persisted. A pseudo-page (see PSEUDO_PAGES) has no editable region at
+-- all -- writing one just re-renders it against the current graph state.
+function M.write(bufnr, opts)
+  opts = opts or {}
   local st = state[bufnr]
   if not st then
     vim.notify("logsvim: no tracked state for buffer", vim.log.levels.ERROR)
     return
   end
 
-  if not st.pseudo then
-    local content_end
-    if st.mark then
-      content_end = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, st.mark, {})[1]
+  local written = false
+  local content = content_lines(bufnr, st)
+  if not st.pseudo and not vim.deep_equal(content, st.original_lines) then
+    local path = page_path(st)
+    if opts.force then
+      graph.write_lines_atomic(path, content)
+      written = true
     else
-      content_end = vim.api.nvim_buf_line_count(bufnr)
-    end
-
-    local content = {}
-    if content_end > CONTENT_START then
-      content = vim.api.nvim_buf_get_lines(bufnr, CONTENT_START, content_end, false)
-    end
-
-    local path = graph.pages_dir(st.root) .. "/" .. st.name .. ".md"
-    if #content > 0 or vim.fn.filereadable(path) == 1 then
-      vim.fn.mkdir(graph.pages_dir(st.root), "p")
-      local f, err = io.open(path, "w")
-      if not f then
-        error("logsvim: failed to write " .. path .. ": " .. tostring(err))
+      local ok, disk = graph.write_lines_checked(path, st.original_lines, content)
+      if ok then
+        written = true
+      else
+        local merged = graph.merge_lines(content, st.original_lines, disk)
+        if merged and graph.write_lines_checked(path, disk, merged) then
+          written = true
+        else
+          vim.notify(
+            ("logsvim: %s changed on disk and conflicts with your edits, so it wasn't written. "
+              .. "Your edits are kept in the buffer: :w! to overwrite the file with them, "
+              .. "or :LogsvimReload! to discard them and load the file"):format(config.options.pages_dir .. "/" .. st.name .. ".md"),
+            vim.log.levels.WARN
+          )
+          return
+        end
       end
-      if #content > 0 then
-        f:write(table.concat(content, "\n") .. "\n")
-      end
-      f:close()
     end
   end
 
-  local lines, new_content_end, heading_kind = M.render(st.root, st.name)
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-  vim.bo[bufnr].modified = false
-  st.heading_kind = heading_kind
-  set_mark(bufnr, st, lines, new_content_end)
+  -- Keep the cursor where it was: the re-render replaces every line.
+  buffer.keep_views(bufnr, function()
+    refresh(bufnr, st)
+  end)
 
-  if not st.pseudo then
+  if written then
     -- Reindex [[Page]] links in the background so a newly-created page (or
     -- new links within it) show up in completion without a manual
     -- :LogsvimReindex.
     index.refresh(st.root)
+  end
+end
+
+-- Pick up changes made elsewhere: if the page's own content hasn't been
+-- edited, re-render the whole buffer, which also refreshes the linked
+-- references (they may have changed in *other* files). If it has been
+-- edited and the file changed underneath it, leave the buffer alone
+-- (M.write() merges or refuses later) and notify once per file version --
+-- unless `opts.discard` (`:LogsvimReload!`), which throws the edits away.
+function M.reload(bufnr, opts)
+  opts = opts or {}
+  local st = state[bufnr]
+  if not st then
+    return
+  end
+
+  local edited = not vim.deep_equal(content_lines(bufnr, st), st.original_lines)
+  if edited and not opts.discard then
+    local disk = graph.read_lines(page_path(st))
+    local version = table.concat(disk, "\n")
+    if not vim.deep_equal(disk, st.original_lines) and st.notified ~= version then
+      st.notified = version
+      vim.notify(
+        ("logsvim: %s changed on disk, but you have unsaved edits to it. :w tries to merge them, :LogsvimReload! discards yours"):format(
+          config.options.pages_dir .. "/" .. st.name .. ".md"
+        ),
+        vim.log.levels.WARN
+      )
+    end
+    return
+  end
+
+  local lines, content_end, heading_kind = M.render(st.root, st.name)
+  if vim.bo[bufnr].modified or not vim.deep_equal(lines, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) then
+    buffer.keep_views(bufnr, function()
+      refresh(bufnr, st, lines, content_end, heading_kind)
+    end)
   end
 end
 
@@ -442,7 +523,8 @@ function M.rename(root, old_name, new_name)
   local journal_bufnr = vim.fn.bufnr("logsvim-journal://" .. root)
   if journal_bufnr ~= -1 and vim.api.nvim_buf_is_loaded(journal_bufnr) then
     if vim.bo[journal_bufnr].modified then
-      vim.notify("logsvim: journal buffer has unsaved changes; reload manually (:e!) after the rename", vim.log.levels.WARN)
+      -- Refreshes the days the user hasn't touched and flags the rest.
+      journal.reload(journal_bufnr)
     else
       journal.read(journal_bufnr)
     end
@@ -483,6 +565,11 @@ function M.setup_autocmds()
     pattern = "logsvim-page://*",
     callback = function(args)
       M.read(args.buf)
+      if state[args.buf] then
+        -- The BufEnter that follows this read has nothing new to pick up,
+        -- and re-rendering scans every journal for linked references.
+        state[args.buf].just_read = true
+      end
     end,
   })
 
@@ -490,7 +577,33 @@ function M.setup_autocmds()
     group = group,
     pattern = "logsvim-page://*",
     callback = function(args)
-      M.write(args.buf)
+      M.write(args.buf, { force = vim.v.cmdbang == 1 })
+    end,
+  })
+
+  -- No file watcher: pick up changes made elsewhere whenever the user comes
+  -- back to the buffer, or to Neovim itself.
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = group,
+    pattern = "logsvim-page://*",
+    callback = function(args)
+      local st = state[args.buf]
+      if st and st.just_read then
+        st.just_read = nil
+      else
+        M.reload(args.buf)
+      end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("FocusGained", {
+    group = group,
+    callback = function()
+      for bufnr in pairs(state) do
+        if vim.api.nvim_buf_is_loaded(bufnr) then
+          M.reload(bufnr)
+        end
+      end
     end,
   })
 end

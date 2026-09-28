@@ -30,12 +30,8 @@ local function read_cache(root)
 end
 
 local function write_cache(root, names)
-  vim.fn.mkdir(cache_dir(), "p")
-  local f = io.open(cache_file(root), "w")
-  if f then
-    f:write(vim.json.encode(names))
-    f:close()
-  end
+  -- Best-effort: a failed cache write only costs a slower next startup.
+  pcall(graph.write_lines_atomic, cache_file(root), { vim.json.encode(names) })
 end
 
 -- Merge ripgrep's raw "[[Name]]" match lines with existing pages/*.md

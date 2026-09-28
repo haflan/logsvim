@@ -267,6 +267,272 @@ describe(":LogsvimJournal buffer", function()
   end)
 end)
 
+describe(":LogsvimJournal with concurrent changes on disk", function()
+  local root
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root, journal_batch_size = 14 })
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  local function find_row(bufnr, text)
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
+      if l == text then
+        return i - 1 -- 0-indexed
+      end
+    end
+    return nil
+  end
+
+  local function write_file(path, content)
+    local f = assert(io.open(path, "w"))
+    f:write(content)
+    f:close()
+  end
+
+  -- Capture vim.notify messages while `fn` runs.
+  local function capture_notify(fn)
+    local messages = {}
+    local original = vim.notify
+    vim.notify = function(msg)
+      table.insert(messages, msg)
+    end
+    local ok, err = pcall(fn)
+    vim.notify = original
+    assert(ok, err)
+    return messages
+  end
+
+  local day_path = function(day)
+    return root .. "/journals/" .. day .. ".md"
+  end
+
+  it("leaves a day that changed on disk alone when only another day was edited", function()
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(day_path("2026_07_30"), "- changed elsewhere\n")
+
+    local row = find_row(bufnr, "# 2026_08_01")
+    vim.api.nvim_buf_set_lines(bufnr, row + 1, row + 2, false, { "- [[Neovim]] edited" })
+    vim.cmd("write")
+
+    assert.are.equal("- changed elsewhere\n", helpers.read_file(day_path("2026_07_30")))
+    assert.are.equal(
+      "- [[Neovim]] edited\n  - Wired up logsvim.nvim\n  - ![screenshot.png](../assets/screenshot.png)\n",
+      helpers.read_file(day_path("2026_08_01"))
+    )
+    close_journal_buf(bufnr)
+  end)
+
+  it("merges an edit with a change to a different line made on disk, and shows the result", function()
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    -- On disk: the last line changes and a line is added.
+    write_file(
+      day_path("2026_08_01"),
+      "- [[Neovim]]\n  - Wired up logsvim.nvim\n  - ![screenshot.png](../assets/screenshot.png) (from the web)\n  - added in the browser\n"
+    )
+
+    -- In nvim: the first line changes.
+    local row = find_row(bufnr, "# 2026_08_01")
+    vim.api.nvim_buf_set_lines(bufnr, row + 1, row + 2, false, { "- [[Neovim]] edited in nvim" })
+    vim.cmd("write")
+
+    local merged = "- [[Neovim]] edited in nvim\n  - Wired up logsvim.nvim\n  - ![screenshot.png](../assets/screenshot.png) (from the web)\n  - added in the browser\n"
+    assert.are.equal(merged, helpers.read_file(day_path("2026_08_01")))
+    assert.is_false(vim.bo[bufnr].modified)
+
+    -- The buffer shows the merged day, and the next day's header still
+    -- follows it right after the separator.
+    row = find_row(bufnr, "# 2026_08_01")
+    local shown = vim.api.nvim_buf_get_lines(bufnr, row + 1, row + 7, false)
+    assert.are.same({
+      "- [[Neovim]] edited in nvim",
+      "  - Wired up logsvim.nvim",
+      "  - ![screenshot.png](../assets/screenshot.png) (from the web)",
+      "  - added in the browser",
+      "",
+      "# 2026_07_31",
+    }, shown)
+
+    -- A second save with no further edits writes nothing more: the merged
+    -- result is now the day's baseline.
+    local mtime = vim.fn.getftime(day_path("2026_08_01"))
+    vim.cmd("write")
+    assert.are.equal(mtime, vim.fn.getftime(day_path("2026_08_01")))
+
+    close_journal_buf(bufnr)
+  end)
+
+  it("refuses to write a day that conflicts with a change on disk, until :w!", function()
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(day_path("2026_08_01"), "- [[Neovim]] from the web\n  - Wired up logsvim.nvim\n  - ![screenshot.png](../assets/screenshot.png)\n")
+
+    local row = find_row(bufnr, "# 2026_08_01")
+    vim.api.nvim_buf_set_lines(bufnr, row + 1, row + 2, false, { "- [[Neovim]] from nvim" })
+    -- Also edit another day, which has no conflict and must still be saved.
+    local other = find_row(bufnr, "# 2026_07_31")
+    vim.api.nvim_buf_set_lines(bufnr, other + 1, other + 1, false, { "- saved anyway" })
+
+    local messages = capture_notify(function()
+      vim.cmd("write")
+    end)
+
+    assert.are.equal(
+      "- [[Neovim]] from the web\n  - Wired up logsvim.nvim\n  - ![screenshot.png](../assets/screenshot.png)\n",
+      helpers.read_file(day_path("2026_08_01"))
+    )
+    assert.truthy(helpers.read_file(day_path("2026_07_31")):find("^%- saved anyway\n"))
+    assert.is_true(vim.bo[bufnr].modified)
+    assert.are.equal(1, #messages)
+    assert.truthy(messages[1]:find("journals/2026_08_01.md changed on disk", 1, true))
+
+    vim.cmd("write!")
+    assert.are.equal(
+      "- [[Neovim]] from nvim\n  - Wired up logsvim.nvim\n  - ![screenshot.png](../assets/screenshot.png)\n",
+      helpers.read_file(day_path("2026_08_01"))
+    )
+    assert.is_false(vim.bo[bufnr].modified)
+
+    close_journal_buf(bufnr)
+  end)
+
+  it("keeps the next batch's boundaries correct after a merge grows the last loaded day", function()
+    config.setup({ root = root, journal_batch_size = 1 })
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local st = journal._test.state[bufnr]
+
+    -- today + 2026_08_01 loaded; 2026_08_01 is the last, open-ended day.
+    journal._test.maybe_load_more(bufnr)
+    assert.are.equal(3, st.next_index)
+
+    write_file(
+      day_path("2026_08_01"),
+      "- [[Neovim]]\n  - Wired up logsvim.nvim\n  - ![screenshot.png](../assets/screenshot.png)\n  - web 1\n  - web 2\n"
+    )
+    local row = find_row(bufnr, "# 2026_08_01")
+    vim.api.nvim_buf_set_lines(bufnr, row + 1, row + 2, false, { "- [[Neovim]] nvim" })
+    vim.cmd("write")
+    assert.are.equal(
+      "- [[Neovim]] nvim\n  - Wired up logsvim.nvim\n  - ![screenshot.png](../assets/screenshot.png)\n  - web 1\n  - web 2\n",
+      helpers.read_file(day_path("2026_08_01"))
+    )
+
+    -- Load 2026_07_31 below it, then edit the end of 2026_08_01 and the
+    -- start of 2026_07_31: each edit must land in its own file.
+    journal._test.maybe_load_more(bufnr)
+    local web2 = find_row(bufnr, "  - web 2")
+    vim.api.nvim_buf_set_lines(bufnr, web2 + 1, web2 + 1, false, { "  - appended after merge" })
+    local next_header = find_row(bufnr, "# 2026_07_31")
+    vim.api.nvim_buf_set_lines(bufnr, next_header + 1, next_header + 1, false, { "- first in 07_31" })
+    vim.cmd("write")
+
+    assert.are.equal(
+      "- [[Neovim]] nvim\n  - Wired up logsvim.nvim\n  - ![screenshot.png](../assets/screenshot.png)\n  - web 1\n  - web 2\n  - appended after merge\n",
+      helpers.read_file(day_path("2026_08_01"))
+    )
+    assert.truthy(helpers.read_file(day_path("2026_07_31")):find("^%- first in 07_31\n%- %[%[Plugin Ideas%]%]"))
+
+    close_journal_buf(bufnr)
+  end)
+
+  it("merges into an empty day", function()
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local today = graph.filename_display(graph.date_to_filename(os.time()))
+
+    -- Both sides add different content to today's empty file.
+    write_file(day_path(today), "- from the web\n")
+    vim.api.nvim_buf_set_lines(bufnr, 1, 1, false, { "- from nvim" })
+    local messages = capture_notify(function()
+      vim.cmd("write")
+    end)
+
+    -- Both inserted at the same spot: a conflict, so nothing is written.
+    assert.are.equal("- from the web\n", helpers.read_file(day_path(today)))
+    assert.are.equal(1, #messages)
+    assert.is_true(vim.bo[bufnr].modified)
+
+    close_journal_buf(bufnr)
+  end)
+
+  it(":LogsvimReload refreshes an unedited day and keeps an edited one", function()
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(day_path("2026_07_30"), "- refreshed from disk\n")
+    write_file(day_path("2026_08_01"), "- also changed on disk\n")
+
+    local row = find_row(bufnr, "# 2026_08_01")
+    vim.api.nvim_buf_set_lines(bufnr, row + 1, row + 2, false, { "- my edit" })
+
+    local messages = capture_notify(function()
+      vim.cmd("LogsvimReload")
+    end)
+
+    row = find_row(bufnr, "# 2026_07_30")
+    assert.are.same({ "- refreshed from disk" }, vim.api.nvim_buf_get_lines(bufnr, row + 1, -1, false))
+    assert.truthy(find_row(bufnr, "- my edit"))
+    assert.is_nil(find_row(bufnr, "- also changed on disk"))
+    assert.is_true(vim.bo[bufnr].modified)
+    assert.are.equal(1, #messages)
+    assert.truthy(messages[1]:find("journals/2026_08_01.md changed on disk", 1, true))
+
+    -- Notified once per disk version, not on every reload.
+    messages = capture_notify(function()
+      vim.cmd("LogsvimReload")
+    end)
+    assert.are.equal(0, #messages)
+
+    close_journal_buf(bufnr)
+  end)
+
+  it(":LogsvimReload! discards edits and loads the file", function()
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(day_path("2026_08_01"), "- changed on disk\n")
+    local row = find_row(bufnr, "# 2026_08_01")
+    vim.api.nvim_buf_set_lines(bufnr, row + 1, row + 2, false, { "- my edit" })
+
+    vim.cmd("LogsvimReload!")
+
+    assert.is_nil(find_row(bufnr, "- my edit"))
+    row = find_row(bufnr, "# 2026_08_01")
+    assert.are.same({ "- changed on disk", "", "# 2026_07_31" }, vim.api.nvim_buf_get_lines(bufnr, row + 1, row + 4, false))
+    assert.is_false(vim.bo[bufnr].modified)
+
+    -- The reloaded version is the new baseline: saving writes nothing.
+    local mtime = vim.fn.getftime(day_path("2026_08_01"))
+    vim.cmd("write")
+    assert.are.equal(mtime, vim.fn.getftime(day_path("2026_08_01")))
+
+    close_journal_buf(bufnr)
+  end)
+
+  it("reloads on FocusGained without marking the buffer modified", function()
+    journal.open(root)
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    write_file(day_path("2026_07_30"), "- refreshed on focus\n")
+    vim.api.nvim_exec_autocmds("FocusGained", {})
+
+    assert.truthy(find_row(bufnr, "- refreshed on focus"))
+    assert.is_false(vim.bo[bufnr].modified)
+
+    close_journal_buf(bufnr)
+  end)
+end)
+
 describe("graph.filename_display", function()
   it("strips the .md extension", function()
     assert.are.equal("2026_08_01", graph.filename_display("2026_08_01.md"))

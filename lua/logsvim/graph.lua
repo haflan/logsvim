@@ -1,5 +1,7 @@
 local config = require("logsvim.config")
 
+local uv = vim.uv or vim.loop
+
 local M = {}
 
 function M.root()
@@ -115,13 +117,16 @@ end
 
 -- Create today's (or `date`'s) journal file and parent dir if it doesn't
 -- exist yet, without writing any content. Returns the path either way.
+-- Created with O_EXCL rather than a truncating open, so a file created
+-- elsewhere (e.g. today's, from logsurf) between the check and the create
+-- is never clobbered.
 function M.ensure_journal_file(root, date)
   local path = M.journal_path(root, date)
   if vim.fn.filereadable(path) == 0 then
     vim.fn.mkdir(vim.fs.dirname(path), "p")
-    local f = io.open(path, "w")
-    if f then
-      f:close()
+    local fd = uv.fs_open(path, "wx", 420)
+    if fd then
+      uv.fs_close(fd)
     end
   end
   return path
@@ -201,26 +206,119 @@ function M.read_lines(path)
   return lines
 end
 
+-- File content for `lines`: newline-terminated, or truly empty for {}.
+local function serialize(lines)
+  if #lines == 0 then
+    return ""
+  end
+  return table.concat(lines, "\n") .. "\n"
+end
+
+-- Write `lines` to `path` (creating its parent dir) via a temp file in the
+-- same directory that's then renamed over `path`, so no other reader --
+-- Logseq, logsurf's `git add`, a sync tool -- ever sees a half-written
+-- file. Keeps an existing file's permission bits, and writes through a
+-- symlink to its target rather than replacing the link itself.
+function M.write_lines_atomic(path, lines)
+  local target = uv.fs_realpath(path) or path
+  local dir = vim.fs.dirname(target)
+  vim.fn.mkdir(dir, "p")
+
+  local stat = uv.fs_stat(target)
+  local mode = stat and bit.band(stat.mode, 511) or 420 -- 0777 mask / 0644
+  local tmp = ("%s/.logsvim-tmp-%d-%d"):format(dir, uv.os_getpid(), uv.hrtime())
+
+  local fd, err = uv.fs_open(tmp, "wx", mode)
+  if not fd then
+    error("logsvim: failed to write " .. path .. ": " .. tostring(err))
+  end
+  local ok, werr = uv.fs_write(fd, serialize(lines))
+  uv.fs_close(fd)
+  if ok then
+    -- fs_open's mode is filtered through the umask; restore it exactly.
+    ok, werr = uv.fs_chmod(tmp, mode)
+  end
+  if ok then
+    ok, werr = uv.fs_rename(tmp, target)
+  end
+  if not ok then
+    uv.fs_unlink(tmp)
+    error("logsvim: failed to write " .. path .. ": " .. tostring(werr))
+  end
+end
+
+-- Write `new_lines` to `path` only if its current content still equals
+-- `expected_lines` (a missing file counts as {}), i.e. nothing else changed
+-- it since the caller last read it. Returns true, or false + the lines
+-- currently on disk.
+function M.write_lines_checked(path, expected_lines, new_lines)
+  local current = M.read_lines(path)
+  if not vim.deep_equal(current, expected_lines) then
+    return false, current
+  end
+  M.write_lines_atomic(path, new_lines)
+  return true
+end
+
+-- Read-modify-write `path`: `fn(lines)` returns the new lines, or nil for
+-- "nothing to change". The write is checked against what was read, and on
+-- a concurrent change `fn` is simply re-applied to the fresh content.
+-- Returns whether anything was written.
+local function update_lines(path, fn)
+  for _ = 1, 5 do
+    local lines = M.read_lines(path)
+    local new_lines = fn(vim.deepcopy(lines))
+    if not new_lines then
+      return false
+    end
+    if M.write_lines_checked(path, lines, new_lines) then
+      return true
+    end
+  end
+  error("logsvim: " .. path .. " keeps changing on disk; giving up on writing it")
+end
+
+-- Three-way merge with `git merge-file`, the same algorithm logsurf's
+-- server uses, so both sides resolve concurrent edits identically: `ours`
+-- and `theirs` are two edited versions of `base`. Returns the merged lines,
+-- or nil on a conflict or when git isn't available.
+function M.merge_lines(ours, base, theirs)
+  if vim.fn.executable("git") == 0 then
+    return nil
+  end
+  local files = {}
+  for i, lines in ipairs({ ours, base, theirs }) do
+    files[i] = vim.fn.tempname()
+    local f = assert(io.open(files[i], "w"))
+    f:write(serialize(lines))
+    f:close()
+  end
+  local result = vim.system({ "git", "merge-file", "-p", files[1], files[2], files[3] }, { text = true }):wait()
+  for _, file in ipairs(files) do
+    os.remove(file)
+  end
+  -- exit code: 0 = clean, >0 = number of conflicts, <0 (255) = error
+  if result.code ~= 0 then
+    return nil
+  end
+  if result.stdout == "" then
+    return {}
+  end
+  return vim.split((result.stdout:gsub("\n$", "")), "\n", { plain = true })
+end
+
 -- Append a block to `path`, creating the file (and parent dir) if absent.
 -- Blank-line separator when the file already has content.
 function M.append_block(path, block_lines)
-  local out = M.read_lines(path)
-
-  vim.fn.mkdir(vim.fs.dirname(path), "p")
-
-  if #out > 0 then
-    table.insert(out, "")
-  end
-  for _, line in ipairs(block_lines) do
-    table.insert(out, line)
-  end
-
-  local f, err = io.open(path, "w")
-  if not f then
-    error("logsvim: failed to write " .. path .. ": " .. tostring(err))
-  end
-  f:write(table.concat(out, "\n") .. "\n")
-  f:close()
+  update_lines(path, function(out)
+    if #out > 0 then
+      table.insert(out, "")
+    end
+    for _, line in ipairs(block_lines) do
+      table.insert(out, line)
+    end
+    return out
+  end)
 end
 
 -- Every "*.md" filename directly inside `dir` (not recursive), sorted.
@@ -311,23 +409,18 @@ function M.rename_page(root, old_name, new_name)
   local updated = 0
   for _, dir in ipairs({ M.journal_dir(root), M.pages_dir(root) }) do
     for _, fname in ipairs(M.list_md_files(dir)) do
-      local path = dir .. "/" .. fname
-      local lines = M.read_lines(path)
-      local file_changed = false
-      for i, line in ipairs(lines) do
-        local new_line, changed = replace_links_in_line(line, old_name, new_name)
-        if changed then
-          lines[i] = new_line
-          file_changed = true
+      local written = update_lines(dir .. "/" .. fname, function(lines)
+        local file_changed = false
+        for i, line in ipairs(lines) do
+          local new_line, changed = replace_links_in_line(line, old_name, new_name)
+          if changed then
+            lines[i] = new_line
+            file_changed = true
+          end
         end
-      end
-      if file_changed then
-        local f, err = io.open(path, "w")
-        if not f then
-          error("logsvim: failed to write " .. path .. ": " .. tostring(err))
-        end
-        f:write(table.concat(lines, "\n") .. "\n")
-        f:close()
+        return file_changed and lines or nil
+      end)
+      if written then
         updated = updated + 1
       end
     end

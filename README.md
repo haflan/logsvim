@@ -36,6 +36,14 @@ editing — without running Logseq itself.
   rewrites every `[[old]]` reference across journals and pages, and renames
   the page's own file if it has one. Not yet supported from within the
   page's own buffer.
+- Safe alongside other editors of the same graph (Logseq, a web editor, `git
+  pull`, another Neovim): every save checks that the file on disk is still
+  the version you started from. If it changed, the two edits are three-way
+  merged with `git merge-file`. If they conflict, that file isn't written and
+  your edits stay in the buffer; `:w!` overwrites, and `:LogsvimReload!`
+  discards your edits. Files are written atomically (temp file + rename).
+  Open journal/page buffers pick up outside changes when you enter them or
+  when Neovim regains focus.
 - Matches Logseq's own file/config.edn conventions (journal filename format,
   bullet indentation styles) so files stay interoperable with Logseq itself.
 
@@ -109,6 +117,7 @@ require('logsvim').setup {
 | `:LogsvimJournal` | Open the scrollable, editable journal buffer          |
 | `:LogsvimPage {name}` | Show a page's contents and its journal backlinks  |
 | `:LogsvimReindex` | Rebuild the `[[Page]]` link completion index          |
+| `:LogsvimReload[!]` | Pick up changes made on disk in the journal/page buffer (or all of them); `!` also discards your unsaved edits |
 
 ## Testing
 

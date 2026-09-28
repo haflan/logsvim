@@ -47,3 +47,30 @@ vim.api.nvim_create_user_command("LogsvimReindex", function()
     end)
   end)
 end, { desc = "Rebuild the logsvim [[Page]] link index" })
+
+vim.api.nvim_create_user_command("LogsvimReload", function(opts)
+  local opts_reload = { discard = opts.bang }
+  local function reload(bufnr)
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if name:match("^logsvim%-journal://") then
+      journal.reload(bufnr, opts_reload)
+      return true
+    elseif name:match("^logsvim%-page://") then
+      pages.reload(bufnr, opts_reload)
+      return true
+    end
+    return false
+  end
+
+  -- The current buffer if it's a logsvim one, otherwise every loaded one.
+  if not reload(vim.api.nvim_get_current_buf()) then
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(bufnr) then
+        reload(bufnr)
+      end
+    end
+  end
+end, {
+  bang = true,
+  desc = "Pick up changes made on disk; with !, discard unsaved edits",
+})
