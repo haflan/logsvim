@@ -28,24 +28,31 @@ local function marker_date(line)
 end
 
 local DONE_MARKERS = { DONE = true, CANCELED = true, CANCELLED = true }
+local IS_MARKER = {}
+for _, m in ipairs(M.MARKERS) do
+  IS_MARKER[m] = true
+end
 
 -- Logseq's task marker (TODO/DOING/NOW/LATER/WAITING/IN-PROGRESS/DONE/
 -- CANCELED/CANCELLED) if the block's own first line has one, else nil for
 -- a plain (non-task) bullet. Requires the marker to be its own word (end of
 -- line or followed by whitespace) so prose like "DONE-ish workaround" isn't
 -- misread as the DONE marker -- Lua's %f frontier alone would backtrack
--- across the trailing hyphen and accept just that.
+-- across the trailing hyphen and accept just that -- and one of M.MARKERS,
+-- so a bullet starting with any other uppercase word ("API", "I") isn't a
+-- task (edit.cycle_marker would otherwise strip that word).
 local function marker(header_line)
   if not graph.is_bullet_line(header_line) then
     return nil
   end
   local content = header_line:match("^[ \t]*%-%s*(.*)$")
   local word, rest = content:match("^(%u[%u%-]*)(.*)$")
-  if word and (rest == "" or rest:match("^%s")) then
+  if word and IS_MARKER[word] and (rest == "" or rest:match("^%s")) then
     return word
   end
   return nil
 end
+M.marker = marker
 
 local function is_done(header_line)
   local m = marker(header_line)

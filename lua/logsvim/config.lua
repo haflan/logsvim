@@ -6,6 +6,10 @@ M.defaults = {
   -- One of "tab" (default), "two-spaces", "four-spaces", "eight-spaces" —
   -- matches Logseq's :export/bullet-indentation config.edn values exactly.
   indentation = "tab",
+  -- Task workflow for keymaps.cycle_task: "now" (LATER -> NOW -> DONE) or
+  -- "todo" (TODO -> DOING -> DONE). Matches Logseq's :preferred-workflow,
+  -- whose default is :now.
+  workflow = "now",
   journal_dir = "journals",
   pages_dir = "pages",
   assets_dir = "assets",
@@ -20,6 +24,8 @@ M.defaults = {
   keymaps = {
     goto_reference = { "gd", "<CR>" },
     rename = "<leader>rn",
+    -- Normal and insert mode.
+    cycle_task = "<C-CR>",
   },
 }
 
@@ -44,8 +50,9 @@ function M.setup(opts)
 end
 
 -- Bind `rhs` to every key configured for keymaps.<name> (e.g.
--- "goto_reference") in buffer `bufnr`. No-op if that action is unset/false.
-function M.set_keymap(bufnr, name, rhs, desc)
+-- "goto_reference") in buffer `bufnr`, in `modes` (default normal mode).
+-- No-op if that action is unset/false.
+function M.set_keymap(bufnr, name, rhs, desc, modes)
   local lhs = M.options.keymaps and M.options.keymaps[name]
   if not lhs then
     return
@@ -54,7 +61,7 @@ function M.set_keymap(bufnr, name, rhs, desc)
     lhs = { lhs }
   end
   for _, key in ipairs(lhs) do
-    vim.keymap.set("n", key, rhs, { buffer = bufnr, desc = desc })
+    vim.keymap.set(modes or "n", key, rhs, { buffer = bufnr, desc = desc })
   end
 end
 

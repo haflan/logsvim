@@ -231,6 +231,9 @@ function M.read(bufnr)
 
   config.set_keymap(bufnr, "goto_reference", M.goto_under_cursor, "logsvim: go to reference under cursor")
   config.set_keymap(bufnr, "rename", M.rename_under_cursor, "logsvim: rename page under cursor")
+  if not st.pseudo then
+    config.set_keymap(bufnr, "cycle_task", require("logsvim.edit").cycle_task, "logsvim: cycle task marker", { "n", "i" })
+  end
 end
 
 local function page_path(st)

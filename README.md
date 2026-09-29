@@ -24,6 +24,12 @@ editing — without running Logseq itself.
 - Logseq-style bullet editing: insert-mode `<CR>` and normal-mode `o`/`O`
   always start a fresh `- ` bullet at the anchor line's indentation, and
   `<Tab>`/`<S-Tab>` in insert mode indent/dedent the current line.
+- Task cycling: `<C-CR>` (normal or insert mode, configurable via
+  `keymaps.cycle_task`) cycles the current block's marker like Logseq's
+  Ctrl+Enter: `LATER` → `NOW` → `DONE` → none, or `TODO` → `DOING` → `DONE`
+  → none with `workflow = "todo"`. Needs a terminal that sends `<C-CR>` as
+  its own key (kitty, WezTerm, Ghostty, foot, or tmux with `extended-keys`);
+  otherwise map it to something else.
 - `gd` and normal-mode `<CR>` (configurable, see `keymaps.goto_reference`)
   follow whatever's under the cursor, in either direction: a `[[Page]]` link
   opens that page, and failing that, in a page's linked references, the
@@ -52,8 +58,9 @@ editing — without running Logseq itself.
 Deliberately out of scope, or just not built yet:
 
 - The query language (`{{query ...}}`, advanced queries).
-- Tags (`#tag`), page/block properties (`key:: value`), task markers
-  (`TODO`/`DOING`/...), block references/embeds.
+- Tags (`#tag`), page/block properties (`key:: value`), block
+  references/embeds. Task markers are only cycled and listed, not clocked
+  (no `:LOGBOOK:`).
 - Deleting pages, or renaming a page from within its own buffer.
 - Graph view, whiteboards, flashcards, or a plugin/marketplace API.
 
@@ -90,6 +97,9 @@ require('logsvim').setup {
   -- One of "tab" (default), "two-spaces", "four-spaces", "eight-spaces" —
   -- matches Logseq's :export/bullet-indentation config.edn values.
   indentation = "tab",
+  -- Task cycling order for keymaps.cycle_task: "now" (LATER -> NOW -> DONE,
+  -- Logseq's default :preferred-workflow) or "todo" (TODO -> DOING -> DONE).
+  workflow = "now",
   journal_dir = "journals",
   pages_dir = "pages",
   assets_dir = "assets",
@@ -104,6 +114,7 @@ require('logsvim').setup {
   keymaps = {
     goto_reference = { "gd", "<CR>" },
     rename = "<leader>rn",
+    cycle_task = "<C-CR>", -- normal and insert mode
   },
 }
 ```

@@ -66,4 +66,15 @@ describe("config.set_keymap", function()
     config.set_keymap(bufnr, "rename", function() end, "test")
     assert.is_false(lhs_set(bufnr)["<leader>rn"] or false)
   end)
+
+  it("binds in the given modes", function()
+    config.setup({ keymaps = { cycle_task = "zt" } })
+    config.set_keymap(bufnr, "cycle_task", function() end, "test", { "n", "i" })
+    assert.is_true(lhs_set(bufnr)["zt"])
+    local insert = {}
+    for _, map in ipairs(vim.api.nvim_buf_get_keymap(bufnr, "i")) do
+      insert[map.lhs] = true
+    end
+    assert.is_true(insert["zt"])
+  end)
 end)
