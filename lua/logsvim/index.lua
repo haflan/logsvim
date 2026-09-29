@@ -35,9 +35,10 @@ local function write_cache(root, names)
 end
 
 -- Merge ripgrep's raw "[[Name]]" match lines with existing pages/*.md
--- filenames into a sorted, deduplicated list of page names. Pure/testable:
--- takes no io beyond its arguments.
-function M._parse_names(rg_stdout, page_filenames)
+-- filenames and page names from `tags::`/`alias::` properties into a
+-- sorted, deduplicated list of page names. Pure/testable: takes no io
+-- beyond its arguments.
+function M._parse_names(rg_stdout, page_filenames, property_names)
   local seen = {}
   for _, line in ipairs(vim.split(rg_stdout or "", "\n", { trimempty = true })) do
     local name = line:match("^%[%[(.+)%]%]$")
@@ -47,6 +48,9 @@ function M._parse_names(rg_stdout, page_filenames)
   end
   for _, fname in ipairs(page_filenames or {}) do
     seen[(fname:gsub("%.md$", ""))] = true
+  end
+  for _, name in ipairs(property_names or {}) do
+    seen[name] = true
   end
 
   local names = {}
@@ -69,6 +73,16 @@ local function page_filenames(root)
     end
   end
   return files
+end
+
+-- Page names referenced from pages' leading tags::/alias:: properties (see
+-- graph.property_page_names), which count as references just like [[Name]].
+local function property_names(root)
+  local names = {}
+  for _, fname in ipairs(page_filenames(root)) do
+    vim.list_extend(names, graph.property_page_names(graph.read_lines(graph.pages_dir(root) .. "/" .. fname)))
+  end
+  return names
 end
 
 -- Names currently known for `root` (may be empty until the first refresh
@@ -96,7 +110,7 @@ function M.known_roots()
 end
 
 -- Kick off an async rg scan of journal_dir + pages_dir for "[[Name]]"
--- references, merge with pages/*.md filenames, update the in-memory table
+-- references, merge with pages/*.md filenames and tags::/alias:: names, update the in-memory table
 -- and disk cache, and invoke `on_done(names)` (if given) once finished.
 function M.refresh(root, on_done)
   root = root or graph.root()
@@ -112,9 +126,9 @@ function M.refresh(root, on_done)
   vim.system(args, { text = true }, function(result)
     -- exit code 1 from ripgrep means "no matches", not a failure
     local stdout = (result.code == 0 or result.code == 1) and result.stdout or ""
-    local names = M._parse_names(stdout, page_filenames(root))
 
     vim.schedule(function()
+      local names = M._parse_names(stdout, page_filenames(root), property_names(root))
       mem[root] = names
       write_cache(root, names)
       if on_done then

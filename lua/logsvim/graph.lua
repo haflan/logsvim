@@ -363,25 +363,134 @@ local function replace_links_in_line(line, old_name, new_name)
   return result, changed
 end
 
+-- A page property line ("key:: value", no indentation, no bullet). A page's
+-- properties are the consecutive such lines at its very top, stopping at the
+-- first line that isn't one -- the same rule logsurf uses (propLineRe).
+local function is_property_line(line)
+  return line:match("^%a[%w_-]*::") ~= nil
+end
+
+-- A page's properties (key -> trimmed value) from its leading property
+-- lines. Pages are plain Markdown, so a "key:: value" line anywhere below
+-- the first non-property line (a heading, a paragraph, a bullet) isn't one.
+function M.page_properties(lines)
+  local props = {}
+  for _, line in ipairs(lines) do
+    if not is_property_line(line) then
+      break
+    end
+    local key, value = line:match("^([^:]+)::(.*)$")
+    props[key] = vim.trim(value)
+  end
+  return props
+end
+
+-- Page properties whose values name other pages, the way [[links]] do: a
+-- comma-separated list, each item written as Name, [[Name]], #Name or
+-- #[[Name]].
+local REF_PROPERTIES = { tags = true, alias = true }
+
+-- The page name one comma-separated tags::/alias:: item refers to, or nil
+-- for an empty one.
+local function property_item_name(item)
+  item = vim.trim(item)
+  item = item:match("^#?%[%[(.*)%]%]$") or item:match("^#(.*)$") or item
+  item = vim.trim(item)
+  return item ~= "" and item or nil
+end
+
+-- Every page name a page's leading tags::/alias:: properties refer to.
+function M.property_page_names(lines)
+  local names = {}
+  for key, value in pairs(M.page_properties(lines)) do
+    if REF_PROPERTIES[key] then
+      for _, item in ipairs(vim.split(value, ",", { plain = true })) do
+        local name = property_item_name(item)
+        if name then
+          table.insert(names, name)
+        end
+      end
+    end
+  end
+  return names
+end
+
+-- `lines` with every plain Name or #Name item naming `old_name` in its
+-- leading tags::/alias:: properties renamed to `new_name` (a [[Name]] item
+-- is a link, which replace_links_in_line already covers). Only the matched
+-- item's text changes, keeping the spacing around it and a CRLF "\r".
+-- Returns whether anything changed.
+local function rename_property_refs(lines, old_name, new_name)
+  local changed = false
+  -- "#Two Words" isn't a tag, so a name with whitespace needs brackets.
+  local new_tag = "#" .. (new_name:find("%s") and ("[[" .. new_name .. "]]") or new_name)
+  for i, line in ipairs(lines) do
+    if not is_property_line(line) then
+      break
+    end
+    local prefix, key, value = line:match("^(([%w_-]+)::)(.*)$")
+    if REF_PROPERTIES[key] then
+      local new_value = value:gsub("[^,]+", function(item)
+        local lead, core, trail = item:match("^(%s*)(.-)(%s*)$")
+        if core == old_name then
+          return lead .. new_name .. trail
+        elseif core == "#" .. old_name then
+          return lead .. new_tag .. trail
+        end
+      end)
+      if new_value ~= value then
+        lines[i] = prefix .. new_value
+        changed = true
+      end
+    end
+  end
+  return changed
+end
+
+-- `lines` with its leading "title:: X" property (if any) set to `title`,
+-- keeping a CRLF line's trailing "\r". Returns nil if there's no such
+-- property (or it already says `title`); only that one line ever changes.
+local function set_title_property(lines, title)
+  for i, line in ipairs(lines) do
+    if not is_property_line(line) then
+      break
+    end
+    if line:match("^title::") then
+      local new_line = "title:: " .. title .. (line:match("\r$") or "")
+      if new_line == line then
+        return nil
+      end
+      lines[i] = new_line
+      return lines
+    end
+  end
+  return nil
+end
+
 -- Whether `name` is already a known page in `root`: either it has its own
 -- pages/<name>.md, or it's referenced via a "[[name]]" link somewhere in a
--- journal or page file (a page with no file of its own still has an
--- identity once something links to it). Scans files directly rather than
--- going through index.lua's cache, which is populated asynchronously and
--- can still be empty (or stale) at exactly the moment this needs an
--- authoritative answer -- e.g. right after Neovim starts.
+-- journal or page file, or named in a page's tags::/alias:: properties (a
+-- page with no file of its own still has an identity once something links
+-- to it). Scans files directly rather than going through index.lua's
+-- cache, which is populated asynchronously and can still be empty (or
+-- stale) at exactly the moment this needs an authoritative answer -- e.g.
+-- right after Neovim starts.
 local function page_exists(root, name)
   if vim.fn.filereadable(M.pages_dir(root) .. "/" .. name .. ".md") == 1 then
     return true
   end
   for _, dir in ipairs({ M.journal_dir(root), M.pages_dir(root) }) do
     for _, fname in ipairs(M.list_md_files(dir)) do
-      for _, line in ipairs(M.read_lines(dir .. "/" .. fname)) do
+      local lines = M.read_lines(dir .. "/" .. fname)
+      for _, line in ipairs(lines) do
         for match in line:gmatch("%[%[([^%[%]]+)%]%]") do
           if match == name then
             return true
           end
         end
+      end
+      if dir == M.pages_dir(root) and vim.tbl_contains(M.property_page_names(lines), name) then
+        return true
       end
     end
   end
@@ -389,7 +498,9 @@ local function page_exists(root, name)
 end
 
 -- Rename a page: rewrite every "[[old_name]]" reference to "[[new_name]]"
--- across every journal and page file, then rename pages/<old_name>.md to
+-- across every journal and page file, every plain/#tag item naming it in a
+-- page's tags::/alias:: properties, and the page's own leading "title::"
+-- property (if it has one), then rename pages/<old_name>.md to
 -- pages/<new_name>.md if it exists (a page referenced only via [[links]],
 -- with no file of its own, has nothing to rename on disk). Returns the
 -- number of files whose content was rewritten, or nil + an error message if
@@ -409,7 +520,8 @@ function M.rename_page(root, old_name, new_name)
   local updated = 0
   for _, dir in ipairs({ M.journal_dir(root), M.pages_dir(root) }) do
     for _, fname in ipairs(M.list_md_files(dir)) do
-      local written = update_lines(dir .. "/" .. fname, function(lines)
+      local path = dir .. "/" .. fname
+      local written = update_lines(path, function(lines)
         local file_changed = false
         for i, line in ipairs(lines) do
           local new_line, changed = replace_links_in_line(line, old_name, new_name)
@@ -417,6 +529,12 @@ function M.rename_page(root, old_name, new_name)
             lines[i] = new_line
             file_changed = true
           end
+        end
+        if dir == M.pages_dir(root) and rename_property_refs(lines, old_name, new_name) then
+          file_changed = true
+        end
+        if path == old_path and set_title_property(lines, new_name) then
+          file_changed = true
         end
         return file_changed and lines or nil
       end)

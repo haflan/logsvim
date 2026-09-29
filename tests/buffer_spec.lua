@@ -38,6 +38,44 @@ describe("buffer auto-attach", function()
     pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
   end)
 
+  local function has_map(bufnr, mode, lhs)
+    for _, map in ipairs(vim.api.nvim_buf_get_keymap(bufnr, mode)) do
+      if map.lhs == lhs then
+        return true
+      end
+    end
+    return false
+  end
+
+  it("gives a real page file plain Markdown editing: no bullet or task-cycling keymaps", function()
+    vim.fn.chdir(root)
+    vim.cmd("noswapfile edit " .. vim.fn.fnameescape(root .. "/pages/Neovim.md"))
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    assert.is_true(vim.b[bufnr].logsvim_attached)
+    assert.is_false(has_map(bufnr, "i", "<CR>"))
+    assert.is_false(has_map(bufnr, "n", "o"))
+    assert.is_false(has_map(bufnr, "i", "<Tab>"))
+    assert.is_false(has_map(bufnr, "n", "<C-CR>"))
+
+    vim.bo[bufnr].modified = false
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end)
+
+  it("gives a real journal file Logseq-style bullet editing and task cycling", function()
+    vim.fn.chdir(root)
+    vim.cmd("noswapfile edit " .. vim.fn.fnameescape(root .. "/journals/2026_07_30.md"))
+    local bufnr = vim.api.nvim_get_current_buf()
+
+    assert.is_true(has_map(bufnr, "i", "<CR>"))
+    assert.is_true(has_map(bufnr, "n", "o"))
+    assert.is_true(has_map(bufnr, "i", "<Tab>"))
+    assert.is_true(has_map(bufnr, "n", "<C-CR>"))
+
+    vim.bo[bufnr].modified = false
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end)
+
   it("doesn't notify when a markdown file outside any graph is opened", function()
     -- The BufEnter autocmd fires for every *.md buffer, including ones with
     -- no graph behind them at all, so it must resolve silently rather than

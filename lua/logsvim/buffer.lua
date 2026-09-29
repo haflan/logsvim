@@ -22,15 +22,21 @@ local function attach_cmp(bufnr)
   })
 end
 
--- Wire up bullet-continuation editing and [[ ]] completion for `bufnr`.
--- Safe to call more than once per buffer.
+-- Wire up [[ ]] completion for `bufnr`, plus Logseq-style bullet editing
+-- and task cycling if it's a journal (the logsvim-journal:// buffer or a
+-- real journal file): pages are plain Markdown documents, edited like any
+-- other Markdown file. Safe to call more than once per buffer.
 function M.attach(bufnr, root)
   if vim.b[bufnr].logsvim_attached then
     return
   end
   vim.b[bufnr].logsvim_attached = true
+  root = root or graph.root()
 
-  edit.attach(bufnr)
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if vim.startswith(name, "logsvim-journal://") or M.is_journal_path(name, root) then
+    edit.attach(bufnr)
+  end
   attach_cmp(bufnr)
   if vim.bo[bufnr].buftype == "" then
     -- A real file: let Neovim reload it when it changes on disk and the
@@ -38,7 +44,7 @@ function M.attach(bufnr, root)
     -- autocmds below make sure it actually checks.
     vim.bo[bufnr].autoread = true
   end
-  index.ensure_loaded(root or graph.root())
+  index.ensure_loaded(root)
 end
 
 -- Run `fn` with the view (cursor, scroll) of every window showing `bufnr`
@@ -66,6 +72,12 @@ function M.is_graph_path(path, root)
   local jd = vim.fn.fnamemodify(graph.journal_dir(root), ":p")
   local pd = vim.fn.fnamemodify(graph.pages_dir(root), ":p")
   return vim.startswith(full, jd) or vim.startswith(full, pd)
+end
+
+-- Whether `path` (a real file) lives inside `root`'s journal_dir.
+function M.is_journal_path(path, root)
+  local full = vim.fn.fnamemodify(path, ":p")
+  return vim.startswith(full, vim.fn.fnamemodify(graph.journal_dir(root), ":p"))
 end
 
 -- Check a real graph file for changes made elsewhere (see 'autoread' in

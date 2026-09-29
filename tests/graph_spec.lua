@@ -173,6 +173,50 @@ describe("graph.rename_page", function()
     assert.truthy(helpers.read_file(root .. "/journals/2026_07_31.md"):find("[[Plugin Ideas]]", 1, true))
   end)
 
+  local function write_file(path, content)
+    local f = assert(io.open(path, "wb"))
+    f:write(content)
+    f:close()
+  end
+
+  it("updates the renamed page's leading title:: property, touching no other line", function()
+    write_file(root .. "/pages/Neovim.md", "tags:: editor\ntitle:: Neovim\n\n# Neovim\n\nSome text.\n")
+    graph.rename_page(root, "Neovim", "Neovim Editor")
+    assert.are.equal(
+      "tags:: editor\ntitle:: Neovim Editor\n\n# Neovim\n\nSome text.\n",
+      helpers.read_file(root .. "/pages/Neovim Editor.md")
+    )
+  end)
+
+  it("keeps a CRLF title:: line's trailing \\r", function()
+    write_file(root .. "/pages/Neovim.md", "title:: Neovim\r\n- first\r\n")
+    graph.rename_page(root, "Neovim", "Neovim Editor")
+    assert.are.equal("title:: Neovim Editor\r\n- first\r\n", helpers.read_file(root .. "/pages/Neovim Editor.md"))
+  end)
+
+  it("renames plain and #tag items naming the page in other pages' leading tags::/alias::", function()
+    write_file(root .. "/pages/Other.md", "tags:: Editors,  Neovim , #Neovim, [[Neovim]], NeovimX\r\nalias:: Neovim\n\ntags:: Neovim\n")
+    graph.rename_page(root, "Neovim", "Neovim Editor")
+    assert.are.equal(
+      "tags:: Editors,  Neovim Editor , #[[Neovim Editor]], [[Neovim Editor]], NeovimX\r\nalias:: Neovim Editor\n\ntags:: Neovim\n",
+      helpers.read_file(root .. "/pages/Other.md")
+    )
+  end)
+
+  it("refuses to rename onto a name only known from a page's tags::", function()
+    write_file(root .. "/pages/Other.md", "tags:: Editors\n")
+    local updated, err = graph.rename_page(root, "Neovim", "Editors")
+    assert.is_nil(updated)
+    assert.truthy(err)
+    assert.are.equal(1, vim.fn.filereadable(root .. "/pages/Neovim.md"))
+  end)
+
+  it("leaves a title:: line below the page's leading properties alone", function()
+    write_file(root .. "/pages/Neovim.md", "Intro paragraph.\ntitle:: Neovim\n")
+    graph.rename_page(root, "Neovim", "Neovim Editor")
+    assert.are.equal("Intro paragraph.\ntitle:: Neovim\n", helpers.read_file(root .. "/pages/Neovim Editor.md"))
+  end)
+
   it("errors on an empty or unchanged new name", function()
     local updated, err = graph.rename_page(root, "Neovim", "")
     assert.is_nil(updated)
@@ -181,6 +225,47 @@ describe("graph.rename_page", function()
     updated, err = graph.rename_page(root, "Neovim", "Neovim")
     assert.is_nil(updated)
     assert.truthy(err)
+  end)
+end)
+
+describe("graph.page_properties", function()
+  it("reads the consecutive key:: value lines at the top of a page", function()
+    assert.are.same({ tags = "a, b", title = "My Page" }, graph.page_properties({ "tags:: a, b", "title:: My Page", "", "Text" }))
+  end)
+
+  it("finds title:: after tags::", function()
+    assert.are.equal("X", graph.page_properties({ "tags:: t", "title:: X" }).title)
+  end)
+
+  it("still finds title:: followed by an outline", function()
+    assert.are.equal("X", graph.page_properties({ "title:: X", "- first" }).title)
+  end)
+
+  it("doesn't treat a title:: below a paragraph or a heading as a property", function()
+    assert.are.same({}, graph.page_properties({ "Some text", "title:: X" }))
+    assert.are.same({}, graph.page_properties({ "# Heading", "title:: X" }))
+    assert.are.same({}, graph.page_properties({ "", "title:: X" }))
+  end)
+
+  it("doesn't treat an indented or bulleted key:: value line as a page property", function()
+    assert.are.same({}, graph.page_properties({ "  title:: X" }))
+    assert.are.same({}, graph.page_properties({ "- title:: X" }))
+  end)
+
+  it("trims a CRLF line's trailing \\r off the value", function()
+    assert.are.equal("X", graph.page_properties({ "title:: X\r" }).title)
+  end)
+end)
+
+describe("graph.property_page_names", function()
+  it("reads names from leading tags::/alias:: items written as Name, [[Name]], #Name or #[[Name]]", function()
+    local names = graph.property_page_names({ "alias:: Nvim", "tags:: Editors, [[Two Words]], #tag,#[[Big Tag]], ", "Text" })
+    table.sort(names)
+    assert.are.same({ "Big Tag", "Editors", "Nvim", "Two Words", "tag" }, names)
+  end)
+
+  it("ignores other properties and tags:: lines below the leading properties", function()
+    assert.are.same({}, graph.property_page_names({ "title:: X", "", "tags:: Later" }))
   end)
 end)
 

@@ -16,18 +16,13 @@ local ns = vim.api.nvim_create_namespace("logsvim_pages")
 -- here on is the read-only aggregation.
 local CONTENT_START = 2
 
--- bufnr -> { root, name, mark, pseudo, heading_kind, original_lines,
--- notified }. `original_lines` is the page file's content as last rendered
--- (see refresh()); `notified` the disk version M.reload() already warned
--- about. `mark` is an extmark
--- at the row (0-indexed) where the read-only aggregation section begins, or
--- nil if the page currently has nothing to show there (in which case
--- everything from CONTENT_START to the end of the buffer is page content).
--- `heading_kind` maps each "### <name>" heading's 1-indexed line number in
--- the buffer to "journal" or "page", so goto_reference() knows which one to
--- jump to. Keyed by line rather than name, since a pseudo-page can list a
--- journal-sourced and a page-sourced group whose names happen to collide
--- (e.g. a page and a journal date with the same display text).
+-- bufnr -> { root, name, mark, pseudo, original_lines, notified }.
+-- `original_lines` is the page file's content as last rendered (see
+-- refresh()); `notified` the disk version M.reload() already warned about.
+-- `mark` is an extmark at the row (0-indexed) where the read-only
+-- aggregation section begins, or nil if the page currently has nothing to
+-- show there (in which case everything from CONTENT_START to the end of the
+-- buffer is page content).
 local state = {}
 
 -- "Pseudo-pages": synthetic, read-only pages that don't correspond to a
@@ -37,8 +32,9 @@ local state = {}
 -- lists SCHEDULED/DEADLINE blocks due today or earlier that aren't done
 -- yet, and one page per Logseq task marker (TODO, DOING, NOW, LATER,
 -- WAITING, IN-PROGRESS, DONE, CANCELED, CANCELLED) lists every block
--- currently carrying that marker -- anywhere in the graph, grouped by
--- source and re-indented under its ancestor context (see outline.lua).
+-- currently carrying that marker -- in any journal (tasks only live there;
+-- pages are plain Markdown), grouped by date and re-indented under its
+-- ancestor context (see outline.lua).
 local PSEUDO_PAGES = {
   Scheduled = function(root)
     return schedule.due(root)
@@ -100,38 +96,32 @@ local function page_content(root, name)
 end
 
 -- Render a pseudo-page: "# name" plus its aggregated groups, each under a
--- "### <source>" heading, with no editable region at all (content_end ==
--- CONTENT_START unconditionally). `heading_kind` maps each heading's line
--- number to its source's kind ("journal" or "page") for goto_reference() to
--- consult.
+-- "### <date>" heading, with no editable region at all (content_end ==
+-- CONTENT_START unconditionally).
 local function render_pseudo(root, name, provider)
   local lines = { "# " .. name, "" }
-  local heading_kind = {}
 
   for gi, group in ipairs(provider(root)) do
     if gi > 1 then
       table.insert(lines, "")
     end
     table.insert(lines, "### " .. group.name)
-    heading_kind[#lines] = group.kind
     table.insert(lines, "")
     for _, l in ipairs(group.lines) do
       table.insert(lines, l)
     end
   end
 
-  return lines, CONTENT_START, heading_kind
+  return lines, CONTENT_START
 end
 
 -- Render the page view for `name`: for a pseudo-page (see PSEUDO_PAGES
 -- above), its live aggregation with no editable region; otherwise an
 -- editable header + page content (from pages/<name>.md, if it exists),
 -- followed by a read-only "linked references" section listing every
--- journal block that references it, grouped by date. Returns the lines,
+-- journal block that references it, grouped by date. Returns the lines and
 -- the 0-indexed row at which the read-only section begins (== #lines if
--- there's nothing to show there), and a heading->kind map for
--- goto_reference() (always "journal" for linked references; per-group for
--- a pseudo-page).
+-- there's nothing to show there).
 function M.render(root, name)
   if PSEUDO_PAGES[name] then
     return render_pseudo(root, name, PSEUDO_PAGES[name])
@@ -161,7 +151,7 @@ function M.render(root, name)
     end
   end
 
-  return lines, content_end, {}
+  return lines, content_end
 end
 
 local function scheme_parts(bufname)
@@ -202,13 +192,12 @@ end
 -- unmodified. `st.original_lines` records the page file's content as
 -- rendered: the version M.write() expects to still find on disk. Takes
 -- M.render()'s results if the caller already has them.
-local function refresh(bufnr, st, lines, content_end, heading_kind)
+local function refresh(bufnr, st, lines, content_end)
   if not lines then
-    lines, content_end, heading_kind = M.render(st.root, st.name)
+    lines, content_end = M.render(st.root, st.name)
   end
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modified = false
-  st.heading_kind = heading_kind
   st.original_lines = vim.list_slice(lines, CONTENT_START + 1, content_end)
   st.notified = nil
   set_mark(bufnr, st, lines, content_end)
@@ -231,9 +220,6 @@ function M.read(bufnr)
 
   config.set_keymap(bufnr, "goto_reference", M.goto_under_cursor, "logsvim: go to reference under cursor")
   config.set_keymap(bufnr, "rename", M.rename_under_cursor, "logsvim: rename page under cursor")
-  if not st.pseudo then
-    config.set_keymap(bufnr, "cycle_task", require("logsvim.edit").cycle_task, "logsvim: cycle task marker", { "n", "i" })
-  end
 end
 
 local function page_path(st)
@@ -330,23 +316,22 @@ function M.reload(bufnr, opts)
     return
   end
 
-  local lines, content_end, heading_kind = M.render(st.root, st.name)
+  local lines, content_end = M.render(st.root, st.name)
   if vim.bo[bufnr].modified or not vim.deep_equal(lines, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) then
     buffer.keep_views(bufnr, function()
-      refresh(bufnr, st, lines, content_end, heading_kind)
+      refresh(bufnr, st, lines, content_end)
     end)
   end
 end
 
--- Find the nearest "### <name>" heading at or above the cursor -- but only
+-- Find the nearest "### <date>" heading at or above the cursor -- but only
 -- within the read-only aggregation section (below st.mark; see set_mark) --
--- and jump to it: a journal date for a normal page's linked references (or
--- a journal-sourced pseudo-page group), or another page for a page-sourced
--- pseudo-page group (see state[bufnr].heading_kind). Restricting the scan
+-- and jump to that date in the journal: every group there, in a page's
+-- linked references or a pseudo-page, is a journal day. Restricting the scan
 -- to below the boundary keeps a "### " heading the user wrote as ordinary
 -- editable page content from being misread as a reference to jump to.
--- Exact block navigation isn't supported, but landing on the right day/page
--- gets you close.
+-- Exact block navigation isn't supported, but landing on the right day gets
+-- you close.
 function M.goto_reference(bufnr)
   local root = scheme_parts(vim.api.nvim_buf_get_name(bufnr))
   local st = state[bufnr]
@@ -362,12 +347,7 @@ function M.goto_reference(bufnr)
   for i = #section, 1, -1 do
     local date = section[i]:match("^### (.+)$")
     if date then
-      local buf_lnum = boundary_row + i
-      if st.heading_kind and st.heading_kind[buf_lnum] == "page" then
-        M.open(date)
-      else
-        journal.goto_date(root, date)
-      end
+      journal.goto_date(root, date)
       return
     end
   end

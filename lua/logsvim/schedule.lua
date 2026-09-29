@@ -1,8 +1,9 @@
 local graph = require("logsvim.graph")
 local outline = require("logsvim.outline")
 
--- Finds Logseq task blocks anywhere in the graph (journals and pages) for
--- the pseudo-pages pages.lua serves: "Scheduled" (SCHEDULED:/DEADLINE:
+-- Finds Logseq task blocks in the graph's journals for the pseudo-pages
+-- pages.lua serves (pages are plain Markdown documents, where "TODO" is just
+-- text, so tasks only ever live in journals): "Scheduled" (SCHEDULED:/DEADLINE:
 -- blocks due today or earlier, not yet done) and one page per task marker
 -- (TODO/DOING/NOW/LATER/WAITING/IN-PROGRESS/DONE/CANCELED/CANCELLED).
 
@@ -59,29 +60,27 @@ local function is_done(header_line)
   return m ~= nil and DONE_MARKERS[m] == true
 end
 
--- Walk every journal/page file, calling `on_file(path, kind, name, lines)`
--- for each. `kind` is "journal" or "page", `name` is the display name
--- (journal date or page name) for that source file.
+-- Walk every journal file, calling `on_file(path, name, lines)` for each.
+-- `name` is the file's display name (its date).
 local function each_file(root, on_file)
-  for _, entry in ipairs({ { dir = graph.journal_dir(root), kind = "journal" }, { dir = graph.pages_dir(root), kind = "page" } }) do
-    for _, fname in ipairs(graph.list_md_files(entry.dir)) do
-      local path = entry.dir .. "/" .. fname
-      on_file(path, entry.kind, graph.filename_display(fname), graph.read_lines(path))
-    end
+  local dir = graph.journal_dir(root)
+  for _, fname in ipairs(graph.list_md_files(dir)) do
+    local path = dir .. "/" .. fname
+    on_file(path, graph.filename_display(fname), graph.read_lines(path))
   end
 end
 
--- Group a flat list of `{ source, kind, name, lines, header }` matches by
--- source file and render each group's headers via outline.group(), sorted
--- by `sort_key(group)` ascending. `group` passed to `sort_key` has `name`,
--- `kind`, and whatever extra fields `extra(group, item)` folds in (e.g. a
+-- Group a flat list of `{ source, name, lines, header }` matches by source
+-- file and render each group's headers via outline.group(), sorted by
+-- `sort_key(group)` ascending. `group` passed to `sort_key` has `name` and
+-- whatever extra fields `extra(group, item)` folds in (e.g. a
 -- running minimum due-date).
 local function group_matches(matches, sort_key, extra)
   local by_source, order = {}, {}
   for _, item in ipairs(matches) do
     local g = by_source[item.source]
     if not g then
-      g = { name = item.name, kind = item.kind, lines = item.lines, headers = {} }
+      g = { name = item.name, lines = item.lines, headers = {} }
       by_source[item.source] = g
       table.insert(order, g)
     end
@@ -101,13 +100,13 @@ local function group_matches(matches, sort_key, extra)
 
   local groups = {}
   for _, g in ipairs(order) do
-    table.insert(groups, { name = g.name, kind = g.kind, lines = outline.group(g.lines, g.headers) })
+    table.insert(groups, { name = g.name, lines = outline.group(g.lines, g.headers) })
   end
   return groups
 end
 
--- Every SCHEDULED/DEADLINE block found anywhere in the graph:
--- { { source = "<path>", kind = "journal"|"page", name = <page/date name>,
+-- Every SCHEDULED/DEADLINE block found in the journals:
+-- { { source = "<path>", name = <date>,
 --     header = <line index>, lines = <file's lines array>, date_t = <time>,
 --     done = bool }, ... }
 -- A block with both a SCHEDULED and a DEADLINE line is reported once, with
@@ -115,7 +114,7 @@ end
 -- either one is, rather than only the first line encountered in the file.
 function M.scan(root)
   local items = {}
-  each_file(root, function(path, kind, name, lines)
+  each_file(root, function(path, name, lines)
     local by_header = {}
     local order = {}
     for i, line in ipairs(lines) do
@@ -124,7 +123,7 @@ function M.scan(root)
         local header = outline.header_for(lines, i)
         local item = by_header[header]
         if not item then
-          item = { source = path, kind = kind, name = name, header = header, lines = lines, date_t = date_t, done = is_done(lines[header]) }
+          item = { source = path, name = name, header = header, lines = lines, date_t = date_t, done = is_done(lines[header]) }
           by_header[header] = item
           table.insert(order, item)
         else
@@ -153,7 +152,7 @@ function M.presence(root, now)
     remaining_markers[status] = true
   end
 
-  each_file(root, function(_, _, _, lines)
+  each_file(root, function(_, _, lines)
     for i, line in ipairs(lines) do
       local m = marker(line)
       if m and remaining_markers[m] then
@@ -178,8 +177,7 @@ end
 -- page: grouped by source file and re-indented relative to its ancestor
 -- context (see outline.lua), oldest group-due-date first (tracked across
 -- all of a group's items, even ones absorbed into another's subtree).
--- Returns { { name = <page/date>, kind = "journal"|"page",
---             lines = {...outline...} }, ... }.
+-- Returns { { name = <date>, lines = {...outline...} }, ... }.
 function M.due(root, now)
   local t = os.date("*t", now or os.time())
   local cutoff = os.time({ year = t.year, month = t.month, day = t.day, hour = 12 })
@@ -199,16 +197,16 @@ function M.due(root, now)
   end)
 end
 
--- Every block anywhere in the graph whose own task marker is exactly
+-- Every journal block whose own task marker is exactly
 -- `status` (e.g. "LATER", "DONE"), for that status's pseudo-page: grouped
 -- by source file and re-indented relative to its ancestor context, sorted
 -- by source name. Returns the same shape as M.due().
 function M.by_marker(root, status)
   local matches = {}
-  each_file(root, function(path, kind, name, lines)
+  each_file(root, function(path, name, lines)
     for i, line in ipairs(lines) do
       if marker(line) == status then
-        table.insert(matches, { source = path, kind = kind, name = name, header = i, lines = lines })
+        table.insert(matches, { source = path, name = name, header = i, lines = lines })
       end
     end
   end)

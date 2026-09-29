@@ -136,24 +136,24 @@ describe("pages.render for a pseudo-page", function()
   end)
 
   it("renders the Scheduled pseudo-page with no editable content region", function()
-    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
+    write_file(root .. "/journals/2026_07_01.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
 
     local lines, content_end = pages.render(root, "Scheduled")
     assert.are.equal("# Scheduled", lines[1])
     assert.are.equal("", lines[2])
     assert.are.equal(2, content_end)
-    assert.are.equal("### Project", lines[3])
+    assert.are.equal("### 2026_07_01", lines[3])
     local text = table.concat(lines, "\n")
     assert.truthy(text:find("TODO Ship v2", 1, true))
   end)
 
   it("renders a task-status pseudo-page listing every block with that marker", function()
-    write_file(root .. "/pages/Groceries.md", "- LATER Buy milk\n")
+    write_file(root .. "/journals/2026_07_02.md", "- LATER Buy milk\n")
 
     local lines = pages.render(root, "LATER")
     assert.are.equal("# LATER", lines[1])
     local text = table.concat(lines, "\n")
-    assert.truthy(text:find("### Groceries", 1, true))
+    assert.truthy(text:find("### 2026_07_02", 1, true))
     assert.truthy(text:find("LATER Buy milk", 1, true))
   end)
 
@@ -192,7 +192,7 @@ describe("pages.completion_names", function()
   end)
 
   it("lists only pseudo-pages that currently have something to show, before real page names", function()
-    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
+    write_file(root .. "/journals/2026_07_01.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
 
     local original_names = index.names
     index.names = function()
@@ -207,8 +207,8 @@ describe("pages.completion_names", function()
   end)
 
   it("keeps PSEUDO_PAGE_NAMES order (Scheduled, then MARKERS order) among populated pseudo-pages", function()
-    write_file(root .. "/pages/A.md", "- LATER A\n")
-    write_file(root .. "/pages/B.md", "- TODO B\n  SCHEDULED: <2020-01-01 Wed>\n")
+    write_file(root .. "/journals/2026_07_01.md", "- LATER A\n")
+    write_file(root .. "/journals/2026_07_02.md", "- TODO B\n  SCHEDULED: <2020-01-01 Wed>\n")
 
     local original_names = index.names
     index.names = function()
@@ -221,7 +221,7 @@ describe("pages.completion_names", function()
   end)
 
   it("skips a real page name that collides with a populated pseudo-page name", function()
-    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
+    write_file(root .. "/journals/2026_07_01.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
 
     local original_names = index.names
     index.names = function()
@@ -574,7 +574,7 @@ describe("pages.open buffer for a pseudo-page", function()
   end)
 
   it("opens like any other page, via :LogsvimPage or a [[Name]] link", function()
-    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
+    write_file(root .. "/journals/2026_07_01.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
 
     pages.open("Scheduled")
     local bufnr = vim.api.nvim_get_current_buf()
@@ -603,7 +603,7 @@ describe("pages.open buffer for a pseudo-page", function()
     local bufnr = vim.api.nvim_get_current_buf()
     assert.is_falsy(table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n"):find("Buy milk", 1, true))
 
-    write_file(root .. "/pages/Groceries.md", "- LATER Buy milk\n")
+    write_file(root .. "/journals/2026_07_02.md", "- LATER Buy milk\n")
     vim.cmd("write")
 
     local text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
@@ -612,32 +612,7 @@ describe("pages.open buffer for a pseudo-page", function()
     close_buf(bufnr)
   end)
 
-  it("goto_reference opens the source page for a page-sourced group", function()
-    write_file(root .. "/pages/Project.md", "- TODO Ship v2\n  SCHEDULED: <2020-01-01 Wed>\n")
-
-    pages.open("Scheduled")
-    local sched_buf = vim.api.nvim_get_current_buf()
-
-    local lnum
-    for i, l in ipairs(vim.api.nvim_buf_get_lines(sched_buf, 0, -1, false)) do
-      if l == "### Project" then
-        lnum = i
-        break
-      end
-    end
-    assert.truthy(lnum)
-    vim.api.nvim_win_set_cursor(0, { lnum + 1, 0 })
-
-    pages.goto_reference(sched_buf)
-
-    local project_buf = vim.api.nvim_get_current_buf()
-    assert.are.equal("# Project", vim.api.nvim_buf_get_lines(project_buf, 0, 1, false)[1])
-
-    close_buf(sched_buf)
-    close_buf(project_buf)
-  end)
-
-  it("goto_reference jumps to the journal date for a journal-sourced group", function()
+  it("goto_reference jumps to the journal date of a group", function()
     local path = root .. "/journals/2026_07_30.md"
     local before = helpers.read_file(path)
     write_file(path, before:gsub("\n$", "") .. "\n\n- TODO Old task\n  SCHEDULED: <2020-01-01 Wed>\n")
@@ -663,46 +638,6 @@ describe("pages.open buffer for a pseudo-page", function()
 
     close_buf(sched_buf)
     close_buf(journal_buf)
-  end)
-
-  it("goto_reference resolves each group by its own heading line, even when two groups share a display name", function()
-    local path = root .. "/journals/2026_07_30.md"
-    local before = helpers.read_file(path)
-    write_file(path, before:gsub("\n$", "") .. "\n\n- LATER From journal\n")
-    write_file(root .. "/pages/2026_07_30.md", "- LATER From page\n")
-
-    pages.open("LATER")
-    local sched_buf = vim.api.nvim_get_current_buf()
-
-    local heading_lines = {}
-    for i, l in ipairs(vim.api.nvim_buf_get_lines(sched_buf, 0, -1, false)) do
-      if l == "### 2026_07_30" then
-        table.insert(heading_lines, i)
-      end
-    end
-    assert.are.equal(2, #heading_lines)
-
-    for _, lnum in ipairs(heading_lines) do
-      local group_text = table.concat(vim.api.nvim_buf_get_lines(sched_buf, lnum, lnum + 3, false), "\n")
-      local from_page = group_text:find("From page", 1, true) ~= nil
-
-      vim.api.nvim_set_current_buf(sched_buf)
-      vim.api.nvim_win_set_cursor(0, { lnum + 1, 0 })
-      pages.goto_reference(sched_buf)
-
-      local dest_buf = vim.api.nvim_get_current_buf()
-      local dest_name = vim.api.nvim_buf_get_name(dest_buf)
-      if from_page then
-        assert.truthy(dest_name:find("logsvim-page://", 1, true))
-      else
-        assert.truthy(dest_name:find("logsvim-journal://", 1, true))
-      end
-      if dest_buf ~= sched_buf then
-        close_buf(dest_buf)
-      end
-    end
-
-    close_buf(sched_buf)
   end)
 
   it("rejects renaming a pseudo-page name", function()

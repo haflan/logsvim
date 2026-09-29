@@ -1,16 +1,17 @@
 # logsvim
 
 A small Neovim plugin for editing a [Logseq](https://logseq.com)-format graph
-directly on disk — daily journals, `[[Page]]` links, and block-based bullet
-editing — without running Logseq itself.
+directly on disk — daily journals with block-based bullet editing,
+`[[Page]]` links, and pages as plain Markdown documents — without running
+Logseq itself.
 
 > [!WARNING]
 > This project is heavily vibe-coded: it was built almost entirely with an AI
 > coding assistant, for personal use, to cover the small slice of Logseq's
 > features its author actually relies on day to day. It has not been
 > extensively reviewed line-by-line, is not a full Logseq replacement (there's
-> no query language, no tags/properties, no task states, and more — see "What
-> this isn't" below), and comes with no warranty. Read the code before
+> no query language, no block properties, no task clocking, and more — see
+> "What this isn't" below), and comes with no warranty. Read the code before
 > trusting it with data you care about.
 
 ## Features
@@ -20,11 +21,15 @@ editing — without running Logseq itself.
   rewrites the days you actually changed.
 - `:LogsvimPage <name>` — a view of a page: its own editable content (if
   any), followed by every journal block that references `[[name]]`, grouped
-  by date (Logseq's "linked references", read-only).
-- Logseq-style bullet editing: insert-mode `<CR>` and normal-mode `o`/`O`
-  always start a fresh `- ` bullet at the anchor line's indentation, and
-  `<Tab>`/`<S-Tab>` in insert mode indent/dedent the current line.
-- Task cycling: `<C-CR>` (normal or insert mode, configurable via
+  by date (Logseq's "linked references", read-only). A page is a plain
+  Markdown document (headings, paragraphs, lists, code, tables; no bullets
+  required) and is edited like any other Markdown file. Outline-style pages
+  still work: they're just a Markdown list.
+- Logseq-style bullet editing in journals: insert-mode `<CR>` and
+  normal-mode `o`/`O` always start a fresh `- ` bullet at the anchor line's
+  indentation, and `<Tab>`/`<S-Tab>` in insert mode indent/dedent the
+  current line.
+- Task cycling in journals: `<C-CR>` (normal or insert mode, configurable via
   `keymaps.cycle_task`) cycles the current block's marker like Logseq's
   Ctrl+Enter: `LATER` → `NOW` → `DONE` → none, or `TODO` → `DOING` → `DONE`
   → none with `workflow = "todo"`. Needs a terminal that sends `<C-CR>` as
@@ -35,13 +40,14 @@ editing — without running Logseq itself.
   opens that page, and failing that, in a page's linked references, the
   nearest date heading jumps to that day in the journal.
 - `[[Page]]` link completion via [nvim-cmp](https://github.com/hrsh7th/nvim-cmp),
-  backed by an index of every page name mentioned anywhere in the graph
-  (kept up to date automatically on save).
+  backed by an index of every page name mentioned anywhere in the graph,
+  including in a page's `tags::`/`alias::` properties (kept up to date
+  automatically on save).
 - Page renaming (`<leader>rn` on a `[[Page]]` link, configurable via
   `keymaps.rename`, in the journal or in a page's linked references):
   rewrites every `[[old]]` reference across journals and pages, and renames
-  the page's own file if it has one. Not yet supported from within the
-  page's own buffer.
+  the page's own file (and its `title::` property) if it has one. Not yet
+  supported from within the page's own buffer.
 - Safe alongside other editors of the same graph (Logseq, a web editor, `git
   pull`, another Neovim): every save checks that the file on disk is still
   the version you started from. If it changed, the two edits are three-way
@@ -58,9 +64,15 @@ editing — without running Logseq itself.
 Deliberately out of scope, or just not built yet:
 
 - The query language (`{{query ...}}`, advanced queries).
-- Tags (`#tag`), page/block properties (`key:: value`), block
-  references/embeds. Task markers are only cycled and listed, not clocked
-  (no `:LOGBOOK:`).
+- An outliner for pages: pages are plain Markdown, so bullets, task markers
+  and task cycling are journal-only (a `TODO` in a page is just text, not a
+  task).
+- Tags (`#tag`), block properties, block references/embeds. Of page
+  properties (the `key:: value` lines at the very top of a page), only
+  `tags::`/`alias::` (fed into completion) and `title::` (kept in sync on
+  rename) are used; a page is still found by its file name, not its
+  `title::`. Task markers are only cycled and listed, not clocked (no
+  `:LOGBOOK:`).
 - Deleting pages, or renaming a page from within its own buffer.
 - Graph view, whiteboards, flashcards, or a plugin/marketplace API.
 

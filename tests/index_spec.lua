@@ -14,6 +14,11 @@ describe("index._parse_names", function()
     assert.are.same({ "Neovim", "Untouched" }, names)
   end)
 
+  it("merges in page names from tags::/alias:: properties", function()
+    local names = index._parse_names("[[Neovim]]\n", { "Neovim.md" }, { "Editors", "Neovim" })
+    assert.are.same({ "Editors", "Neovim" }, names)
+  end)
+
   it("returns an empty list for empty input", function()
     assert.are.same({}, index._parse_names("", {}))
   end)
@@ -21,6 +26,34 @@ describe("index._parse_names", function()
   it("ignores blank lines", function()
     local names = index._parse_names("[[A]]\n\n[[B]]\n", {})
     assert.are.same({ "A", "B" }, names)
+  end)
+end)
+
+describe("index.refresh", function()
+  local root
+
+  before_each(function()
+    root = helpers.temp_graph()
+    config.setup({ root = root, cache_dir = vim.fn.tempname() })
+  end)
+
+  after_each(function()
+    helpers.rmtree(root)
+  end)
+
+  it("indexes names from pages' leading tags::/alias:: properties, but not from later lines", function()
+    vim.fn.writefile({ "alias:: Nvim", "tags:: Editors, [[Lua Things]]", "", "tags:: NotAProperty" }, root .. "/pages/Neovim.md")
+    local names
+    index.refresh(root, function(result)
+      names = result
+    end)
+    vim.wait(5000, function()
+      return names ~= nil
+    end)
+    assert.truthy(vim.tbl_contains(names, "Nvim"))
+    assert.truthy(vim.tbl_contains(names, "Editors"))
+    assert.truthy(vim.tbl_contains(names, "Lua Things"))
+    assert.is_false(vim.tbl_contains(names, "NotAProperty"))
   end)
 end)
 
